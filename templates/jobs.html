@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+{% block title %}Jobs — Job Hunter{% endblock %}
+
+{% block content %}
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1.5rem; flex-wrap:wrap; gap:1rem;">
+  <h1 style="font-size:1.4rem; font-weight:700;">All Jobs <span id="job-count" style="color:var(--text-dim); font-size:1rem; font-weight:400;">({{ jobs|length }})</span></h1>
+  <div style="display:flex; gap:.5rem; flex-wrap:wrap; align-items:center;">
+    <!-- Score filter -->
+    <select id="score-filter" onchange="applyFilters()" class="btn btn-secondary" style="padding:.4rem .75rem; font-size:.8rem;">
+      <option value="all">All Scores</option>
+      <option value="75">75+ (Strong)</option>
+      <option value="60">60+ (Good)</option>
+      <option value="0">Scored only</option>
+      <option value="unscored">Unscored</option>
+    </select>
+    <!-- Status filter -->
+    <select id="status-filter" onchange="applyFilters()" class="btn btn-secondary" style="padding:.4rem .75rem; font-size:.8rem;">
+      <option value="all" {% if status=='all' %}selected{% endif %}>All Status</option>
+      <option value="done" {% if status=='done' %}selected{% endif %}>Done</option>
+      <option value="pending" {% if status=='pending' %}selected{% endif %}>Pending</option>
+      <option value="skipped" {% if status=='skipped' %}selected{% endif %}>Skipped</option>
+      <option value="applied" {% if status=='applied' %}selected{% endif %}>Applied</option>
+    </select>
+    <!-- Source filter -->
+    <select id="source-filter" onchange="applyFilters()" class="btn btn-secondary" style="padding:.4rem .75rem; font-size:.8rem;">
+      <option value="all" {% if source=='all' %}selected{% endif %}>All Sources</option>
+      <option value="linkedin">LinkedIn</option>
+      <option value="indeed">Indeed</option>
+      <option value="remoteok">RemoteOK</option>
+      <option value="weworkremotely">WeWorkRemotely</option>
+      <option value="google">Google</option>
+    </select>
+  </div>
+</div>
+
+<div class="card">
+  <div class="table-wrap">
+    <table id="jobs-table">
+      <thead>
+        <tr>
+          <th class="sortable" data-col="0" data-type="num" style="cursor:pointer; user-select:none; white-space:nowrap;">Score <span class="sort-icon">⇅</span></th>
+          <th class="sortable" data-col="1" data-type="str" style="cursor:pointer; user-select:none;">Title <span class="sort-icon">⇅</span></th>
+          <th class="sortable" data-col="2" data-type="str" style="cursor:pointer; user-select:none;">Company <span class="sort-icon">⇅</span></th>
+          <th>Location</th>
+          <th class="sortable" data-col="4" data-type="str" style="cursor:pointer; user-select:none;">Salary <span class="sort-icon">⇅</span></th>
+          <th>Source</th>
+          <th>HR Name</th>
+          <th>HR Email</th>
+          <th>Apply</th>
+          <th>Email</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="jobs-body">
+        {% for job in jobs %}
+        <tr
+          data-score="{{ job.score or 0 }}"
+          data-scored="{{ 'true' if job.score else 'false' }}"
+          data-status="{{ job.status }}"
+          data-source="{{ job.source }}">
+          <td data-val="{{ job.score or 0 }}">
+            {% if job.score %}
+              <div class="score-ring {{ 'score-high' if job.score >= 75 else 'score-mid' if job.score >= 50 else 'score-low' }}">{{ job.score }}</div>
+            {% else %}
+              <span style="color:var(--text-dim);">—</span>
+            {% endif %}
+          </td>
+          <td data-val="{{ job.title|lower }}" style="font-weight:600; max-width:200px;">
+            <a href="{{ job.url }}" target="_blank" style="color:var(--text); text-decoration:none;">
+              {{ job.title }}<span style="color:var(--text-dim); font-size:.7rem;"> ↗</span>
+            </a>
+          </td>
+          <td data-val="{{ job.company|lower }}" style="color:var(--text-dim);">{{ job.company }}</td>
+          <td style="color:var(--text-dim); font-size:.8rem;">{{ job.location or '—' }}</td>
+          <td data-val="{{ job.salary|lower if job.salary else '' }}" style="font-size:.8rem; color:var(--green);">{{ job.salary or '—' }}</td>
+          <td><span class="badge badge-pending" style="font-size:.65rem;">{{ job.source }}</span></td>
+          <td style="font-size:.8rem; color:{{ 'var(--green)' if job.hr_name else 'var(--text-dim)' }};">
+            {{ job.hr_name or '—' }}
+            {% if job.hr_title %}<br><span style="color:var(--text-dim); font-size:.7rem;">{{ job.hr_title }}</span>{% endif %}
+          </td>
+          <td style="font-size:.8rem;">
+            {% if job.hr_email %}
+              <a href="mailto:{{ job.hr_email }}" style="color:var(--accent);">{{ job.hr_email }}</a>
+            {% elif job.application_email %}
+              <a href="mailto:{{ job.application_email }}" style="color:var(--accent);">{{ job.application_email }}</a>
+            {% else %}
+              <span style="color:var(--text-dim);">—</span>
+            {% endif %}
+          </td>
+          <td style="font-size:.8rem;">
+            {% if job.application_url %}
+              <a href="{{ job.application_url }}" target="_blank" style="color:var(--accent);">Apply ↗</a>
+            {% else %}
+              <span style="color:var(--text-dim);">—</span>
+            {% endif %}
+          </td>
+          <td style="font-size:.75rem;">
+            {% set es = job.email_status or 'not_sent' %}
+            {% if es == 'sent' %}
+              <span style="color:var(--green);">✅ Sent</span>
+            {% elif es == 'failed' %}
+              <span style="color:var(--red);" title="{{ job.email_error }}">❌ Failed</span>
+            {% elif es == 'no_contact' %}
+              <span style="color:var(--yellow);">⚠ No email</span>
+            {% else %}
+              <span style="color:var(--text-dim);">—</span>
+            {% endif %}
+          </td>
+          <td>
+            <select onchange="updateStatus('{{ job.id }}', this.value)"
+                    class="btn btn-secondary"
+                    style="padding:.25rem .5rem; font-size:.75rem; border:none;">
+              <option value="pending" {% if job.status=='pending' %}selected{% endif %}>Pending</option>
+              <option value="done" {% if job.status=='done' %}selected{% endif %}>Done</option>
+              <option value="applied" {% if job.status=='applied' %}selected{% endif %}>Applied</option>
+              <option value="skipped" {% if job.status=='skipped' %}selected{% endif %}>Skipped</option>
+            </select>
+          </td>
+          <td><a href="/job/{{ job.id }}" class="btn btn-secondary" style="padding:.25rem .65rem; font-size:.75rem;">View</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="11" style="text-align:center; color:var(--text-dim); padding:3rem;">No jobs found. Run the pipeline first.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Sort state ─────────────────────────────────────
+const sortState = { col: null, dir: 'none' }; // dir: none → asc → desc → none
+
+function getSortValue(td) {
+  const v = td.getAttribute('data-val');
+  if (v !== null) return v;
+  return td.textContent.trim();
+}
+
+function applySort(colIdx, type) {
+  const tbody = document.getElementById('jobs-body');
+  const rows = Array.from(tbody.querySelectorAll('tr[data-score]'));
+
+  // Cycle: none → asc → desc (→ back to asc)
+  if (sortState.col === colIdx) {
+    sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    sortState.col = colIdx;
+    sortState.dir = 'asc';
+  }
+
+  rows.sort((a, b) => {
+    const aVal = getSortValue(a.querySelectorAll('td')[colIdx]);
+    const bVal = getSortValue(b.querySelectorAll('td')[colIdx]);
+    let cmp = 0;
+    if (type === 'num') {
+      const an = parseFloat(aVal) || 0;
+      const bn = parseFloat(bVal) || 0;
+      cmp = an - bn;
+    } else {
+      cmp = aVal.localeCompare(bVal);
+    }
+    return sortState.dir === 'asc' ? cmp : -cmp;
+  });
+
+  rows.forEach(r => tbody.appendChild(r));
+
+  // Update icons
+  document.querySelectorAll('.sortable .sort-icon').forEach(el => el.textContent = '⇅');
+  const activeHeader = document.querySelector(`.sortable[data-col="${colIdx}"] .sort-icon`);
+  if (activeHeader) activeHeader.textContent = sortState.dir === 'asc' ? '↑' : '↓';
+
+  updateCount();
+}
+
+// ── Filter ─────────────────────────────────────────
+function applyFilters() {
+  const scoreFilter = document.getElementById('score-filter').value;
+  const statusFilter = document.getElementById('status-filter').value;
+  const sourceFilter = document.getElementById('source-filter').value;
+  const rows = document.querySelectorAll('#jobs-body tr[data-score]');
+
+  rows.forEach(row => {
+    const score = parseInt(row.getAttribute('data-score')) || 0;
+    const scored = row.getAttribute('data-scored') === 'true';
+    const status = row.getAttribute('data-status');
+    const source = row.getAttribute('data-source');
+
+    let show = true;
+
+    // Score filter
+    if (scoreFilter === 'unscored') {
+      show = !scored;
+    } else if (scoreFilter === '0') {
+      show = scored;
+    } else if (scoreFilter !== 'all') {
+      show = score >= parseInt(scoreFilter);
+    }
+
+    // Status filter
+    if (show && statusFilter !== 'all') show = status === statusFilter;
+    // Source filter
+    if (show && sourceFilter !== 'all') show = source === sourceFilter;
+
+    row.style.display = show ? '' : 'none';
+  });
+
+  updateCount();
+}
+
+function updateCount() {
+  const visible = document.querySelectorAll('#jobs-body tr[data-score]:not([style*="none"])').length;
+  document.getElementById('job-count').textContent = `(${visible})`;
+}
+
+// ── Wire up sortable headers ───────────────────────
+document.querySelectorAll('.sortable').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = parseInt(th.getAttribute('data-col'));
+    const type = th.getAttribute('data-type');
+    applySort(col, type);
+  });
+});
+
+function updateStatus(jobId, newStatus) {
+  fetch(`/api/job/${jobId}/status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: newStatus }),
+  });
+}
+</script>
+{% endblock %}

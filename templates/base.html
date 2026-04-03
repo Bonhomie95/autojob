@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Job Hunter{% endblock %}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #1a1d27;
+      --border:    #2a2d3e;
+      --accent:    #1a56db;
+      --accent-h:  #1e40af;
+      --green:     #10b981;
+      --yellow:    #f59e0b;
+      --red:       #ef4444;
+      --gray:      #6b7280;
+      --text:      #e5e7eb;
+      --text-dim:  #9ca3af;
+      --radius:    10px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    /* ── Nav ── */
+    nav {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 2rem;
+      display: flex;
+      align-items: center;
+      gap: 2rem;
+      height: 56px;
+      position: sticky; top: 0; z-index: 100;
+    }
+    .nav-brand {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--accent);
+      text-decoration: none;
+      display: flex; align-items: center; gap: 0.5rem;
+    }
+    .nav-links { display: flex; gap: 0.25rem; flex: 1; }
+    .nav-links a {
+      color: var(--text-dim);
+      text-decoration: none;
+      padding: 0.35rem 0.85rem;
+      border-radius: 6px;
+      font-weight: 500;
+      transition: all .15s;
+    }
+    .nav-links a:hover, .nav-links a.active { color: var(--text); background: var(--border); }
+
+    /* ── Layout ── */
+    .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+    }
+    .card-title {
+      font-size: .75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--text-dim);
+      margin-bottom: 1rem;
+    }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex; align-items: center; gap: .45rem;
+      padding: .5rem 1.1rem;
+      border-radius: 7px;
+      border: none; cursor: pointer;
+      font-size: .875rem; font-weight: 600;
+      text-decoration: none;
+      transition: all .15s;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-h); }
+    .btn-secondary { background: var(--border); color: var(--text); }
+    .btn-secondary:hover { background: #3a3d50; }
+    .btn-danger { background: #7f1d1d; color: #fca5a5; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* ── Badges ── */
+    .badge {
+      display: inline-block;
+      padding: .2rem .55rem;
+      border-radius: 20px;
+      font-size: .7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .badge-done     { background: #064e3b; color: #6ee7b7; }
+    .badge-pending  { background: #1e3a5f; color: #93c5fd; }
+    .badge-skipped  { background: #292524; color: #a8a29e; }
+    .badge-applied  { background: #3b1f5e; color: #d8b4fe; }
+
+    /* ── Score ring ── */
+    .score-ring {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 40px; height: 40px;
+      border-radius: 50%;
+      font-weight: 700; font-size: .85rem;
+      border: 2.5px solid;
+    }
+    .score-high   { border-color: var(--green); color: var(--green); }
+    .score-mid    { border-color: var(--yellow); color: var(--yellow); }
+    .score-low    { border-color: var(--red); color: var(--red); }
+
+    /* ── Tables ── */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left;
+      padding: .6rem .85rem;
+      font-size: .7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+    }
+    td { padding: .7rem .85rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,.02); }
+
+    /* ── Stats grid ── */
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; }
+    .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; }
+    .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+    .stat-label { color: var(--text-dim); font-size: .8rem; margin-top: .25rem; }
+
+    /* ── Progress log ── */
+    #progress-log {
+      background: #0a0c12;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem;
+      font-family: 'Menlo', 'Consolas', monospace;
+      font-size: .8rem;
+      line-height: 1.8;
+      max-height: 400px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      display: none;
+    }
+
+    /* ── Upload zone ── */
+    .upload-zone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 2rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s;
+    }
+    .upload-zone:hover, .upload-zone.dragover { border-color: var(--accent); }
+
+    /* ── Alerts ── */
+    .alert { padding: .75rem 1rem; border-radius: 7px; margin-bottom: 1rem; font-size: .875rem; }
+    .alert-info { background: #1e3a5f; color: #93c5fd; border: 1px solid #1d4ed8; }
+    .alert-success { background: #064e3b; color: #6ee7b7; border: 1px solid #059669; }
+    .alert-error { background: #7f1d1d; color: #fca5a5; border: 1px solid #dc2626; }
+
+    /* ── Responsive ── */
+    @media (max-width: 700px) {
+      nav { padding: 0 1rem; gap: 1rem; }
+      .container { padding: 1rem; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <a class="nav-brand" href="/">🎯 Job Hunter</a>
+    <div class="nav-links">
+      <a href="/" {% if request.path == '/' %}class="active"{% endif %}>Dashboard</a>
+      <a href="/jobs" {% if request.path == '/jobs' %}class="active"{% endif %}>Jobs</a>
+      <a href="/settings" {% if request.path == '/settings' %}class="active"{% endif %}>Settings</a>
+    </div>
+  </nav>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <script>
+    // Shared utilities
+    function scoreClass(s) {
+      return s >= 75 ? 'score-high' : s >= 50 ? 'score-mid' : 'score-low';
+    }
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

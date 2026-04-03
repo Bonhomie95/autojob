@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Job Hunter{% endblock %}
+
+{% block content %}
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1.5rem; flex-wrap:wrap; gap:1rem;">
+  <div>
+    <h1 style="font-size:1.5rem; font-weight:700;">Dashboard</h1>
+    <p style="color:var(--text-dim); margin-top:.25rem;">Automated job discovery, scoring & application packages</p>
+  </div>
+  <button id="run-btn" class="btn btn-primary" onclick="startRun()">
+    ▶ Run Pipeline
+  </button>
+</div>
+
+<!-- Stats -->
+<div class="stats-grid" style="margin-bottom:1.5rem;">
+  <a href="/jobs" style="text-decoration:none;">
+    <div class="stat-card" style="cursor:pointer; transition:border-color .15s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+      <div class="stat-value">{{ stats.total }}</div>
+      <div class="stat-label">Total Jobs Found</div>
+    </div>
+  </a>
+  <a href="/jobs?status=done" style="text-decoration:none;">
+    <div class="stat-card" style="cursor:pointer; transition:border-color .15s;" onmouseover="this.style.borderColor='var(--green)'" onmouseout="this.style.borderColor='var(--border)'">
+      <div class="stat-value" style="color:var(--green);">{{ stats.done }}</div>
+      <div class="stat-label">Packages Generated</div>
+    </div>
+  </a>
+  <a href="/jobs" style="text-decoration:none;">
+    <div class="stat-card" style="cursor:pointer; transition:border-color .15s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+      <div class="stat-value">{{ stats.today }}</div>
+      <div class="stat-label">Found Today</div>
+    </div>
+  </a>
+  <a href="/jobs?status=skipped" style="text-decoration:none;">
+    <div class="stat-card" style="cursor:pointer; transition:border-color .15s;" onmouseover="this.style.borderColor='var(--gray)'" onmouseout="this.style.borderColor='var(--border)'">
+      <div class="stat-value" style="color:var(--gray);">{{ stats.skipped }}</div>
+      <div class="stat-label">Skipped (low score)</div>
+    </div>
+  </a>
+  <a href="/jobs" style="text-decoration:none;">
+    <div class="stat-card" style="cursor:pointer; transition:border-color .15s;" onmouseover="this.style.borderColor='var(--green)'" onmouseout="this.style.borderColor='var(--border)'">
+      <div class="stat-value" style="color:var(--green);">{{ stats.emails_sent }}</div>
+      <div class="stat-label">Emails Sent</div>
+    </div>
+  </a>
+</div>
+
+<!-- Progress log -->
+<div id="progress-wrap" style="margin-bottom:1.5rem; display:none;">
+  <div class="card">
+    <div class="card-title">🔄 Pipeline Running…</div>
+    <div id="progress-log"></div>
+  </div>
+</div>
+
+<div style="display:grid; grid-template-columns: 1fr 1fr; gap:1.5rem; margin-bottom:1.5rem;">
+
+  <!-- CV Upload -->
+  <div class="card">
+    <div class="card-title">📄 CV Input</div>
+    {% if cv_files %}
+      <div class="alert alert-success" style="margin-bottom:1rem;">
+        ✅ Active CV: <strong>{{ cv_files[0] }}</strong>
+        {% if cv_files|length > 1 %}
+          <br><span style="font-size:.75rem; color:var(--text-dim);">+ {{ cv_files|length - 1 }} more file(s) in input/</span>
+        {% endif %}
+      </div>
+    {% else %}
+      <div class="alert alert-error" style="margin-bottom:1rem;">
+        ⚠ No CV found. Upload one below before running the pipeline.
+      </div>
+    {% endif %}
+
+    <div class="upload-zone" id="upload-zone" onclick="document.getElementById('cv-input').click()">
+      <div style="font-size:2rem; margin-bottom:.5rem;">📂</div>
+      <div style="font-weight:600;">Drop your CV here or click to browse</div>
+      <div style="color:var(--text-dim); font-size:.8rem; margin-top:.25rem;">DOCX, PDF, or TXT</div>
+    </div>
+    <input type="file" id="cv-input" accept=".docx,.pdf,.txt" style="display:none" onchange="uploadCV(this)">
+    <div id="upload-status" style="margin-top:.75rem; font-size:.85rem;"></div>
+  </div>
+
+  <!-- Config Summary -->
+  <div class="card">
+    <div class="card-title">⚙ Current Config</div>
+    <div style="display:flex; flex-direction:column; gap:.6rem; font-size:.85rem;">
+      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Roles:</span>
+        <span>{{ config.TARGET_ROLES[:3]|join(', ') }}{% if config.TARGET_ROLES|length > 3 %} +{{ config.TARGET_ROLES|length - 3 }} more{% endif %}</span></div>
+      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Min Score:</span> {{ config.MIN_MATCH_SCORE }}/100</div>
+      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Remote Only:</span> {{ '✓ Yes' if config.REMOTE_ONLY else '✗ No' }}</div>
+      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Sources:</span>
+        {% set sources = [] %}
+        {% if config.SCRAPE_LINKEDIN %}{% set _ = sources.append('LinkedIn') %}{% endif %}
+        {% if config.SCRAPE_INDEED %}{% set _ = sources.append('Indeed') %}{% endif %}
+        {% if config.SCRAPE_REMOTEOK %}{% set _ = sources.append('RemoteOK') %}{% endif %}
+        {% if config.SCRAPE_WEWORKREMOTELY %}{% set _ = sources.append('WWR') %}{% endif %}
+        {% if config.SCRAPE_GOOGLE %}{% set _ = sources.append('Google') %}{% endif %}
+        {{ sources|join(', ') }}</div>
+      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Max per board:</span> {{ config.MAX_JOBS_PER_BOARD }}</div>
+      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Model:</span> llama-3.3-70b-versatile</div>
+      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Groq Keys:</span>
+        <span style="color:{{ 'var(--green)' if config.GROQ_API_KEYS|length > 1 else 'var(--text)' }};">
+          {{ config.GROQ_API_KEYS|length }} key{{ 's' if config.GROQ_API_KEYS|length != 1 else '' }} loaded
+          {% if config.GROQ_API_KEYS|length > 1 %}✓ rotation active{% endif %}
+        </span>
+      </div>
+      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Proxy:</span>
+        <span style="color:{{ 'var(--green)' if config.PROXY_ENABLED and config.PROXY_LIST else 'var(--text-dim)' }};">
+          {% if config.PROXY_ENABLED and config.PROXY_LIST %}
+            ✓ {{ config.PROXY_LIST|length }} proxy{{ 'ies' if config.PROXY_LIST|length != 1 else '' }} loaded
+          {% elif config.PROXY_ENABLED %}
+            ⚠ Enabled but no proxies listed
+          {% else %}
+            Off (direct)
+          {% endif %}
+        </span>
+      </div>
+        <span style="color:{{ 'var(--green)' if config.GENERATE_DOCS_WITHOUT_HR else 'var(--yellow)' }};">
+          {{ '✓ Always generate' if config.GENERATE_DOCS_WITHOUT_HR else '⚠ HR contact required' }}
+        </span>
+      </div>
+    </div>
+    <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid var(--border); font-size:.75rem; color:var(--text-dim);">
+      <a href="/settings" style="color:var(--accent); text-decoration:none; font-weight:600;">⚙ Edit all settings →</a>
+    </div>
+  </div>
+</div>
+
+<!-- Recent Jobs -->
+<div class="card" style="margin-bottom:1.5rem;">
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1rem;">
+    <div class="card-title" style="margin-bottom:0;">Recent Jobs</div>
+    <a href="/jobs" class="btn btn-secondary" style="font-size:.8rem; padding:.35rem .75rem;">View All →</a>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Score</th>
+          <th>Title</th>
+          <th>Company</th>
+          <th>Source</th>
+          <th>HR Contact</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td>
+            {% if job.score %}
+              <div class="score-ring {{ 'score-high' if job.score >= 75 else 'score-mid' if job.score >= 50 else 'score-low' }}">
+                {{ job.score }}
+              </div>
+            {% else %}
+              <span style="color:var(--text-dim);">—</span>
+            {% endif %}
+          </td>
+          <td style="font-weight:600; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ job.title }}</td>
+          <td style="color:var(--text-dim);">{{ job.company }}</td>
+          <td><span class="badge badge-pending" style="font-size:.65rem;">{{ job.source }}</span></td>
+          <td>
+            {% if job.hr_name or job.hr_email %}
+              <span style="color:var(--green); font-size:.8rem;">✓ {{ job.hr_name or job.hr_email }}</span>
+            {% else %}
+              <span style="color:var(--text-dim); font-size:.8rem;">—</span>
+            {% endif %}
+          </td>
+          <td><span class="badge badge-{{ job.status }}">{{ job.status }}</span></td>
+          <td><a href="/job/{{ job.id }}" class="btn btn-secondary" style="padding:.25rem .65rem; font-size:.75rem;">View</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" style="text-align:center; color:var(--text-dim); padding:2rem;">No jobs yet — run the pipeline to start.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Recent Runs -->
+<div class="card">
+  <div class="card-title">📊 Recent Pipeline Runs</div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Started</th><th>Duration</th><th>Found</th><th>Qualified</th><th>Docs</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        {% for run in runs %}
+        <tr>
+          <td style="color:var(--text-dim);">{{ run.id }}</td>
+          <td>{{ run.started_at[:16].replace('T',' ') if run.started_at else '—' }}</td>
+          <td style="color:var(--text-dim);">
+            {% if run.started_at and run.finished_at %}
+              —
+            {% else %}🔄{% endif %}
+          </td>
+          <td>{{ run.jobs_found }}</td>
+          <td>{{ run.jobs_scored }}</td>
+          <td style="color:var(--green); font-weight:600;">{{ run.docs_generated }}</td>
+          <td>
+            <span class="badge {{ 'badge-done' if run.status == 'done' else 'badge-pending' if run.status == 'running' else 'badge-skipped' }}">
+              {{ run.status }}
+            </span>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" style="text-align:center; color:var(--text-dim); padding:1.5rem;">No runs yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let evtSource = null;
+
+function startRun() {
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Running…';
+
+  const log = document.getElementById('progress-log');
+  const wrap = document.getElementById('progress-wrap');
+  log.textContent = '';
+  log.style.display = 'block';
+  wrap.style.display = 'block';
+
+  fetch('/run', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        log.textContent = '❌ ' + data.error;
+        btn.disabled = false;
+        btn.textContent = '▶ Run Pipeline';
+        return;
+      }
+      startStream();
+    })
+    .catch(err => {
+      log.textContent = '❌ ' + err;
+      btn.disabled = false;
+      btn.textContent = '▶ Run Pipeline';
+    });
+}
+
+function startStream() {
+  const log = document.getElementById('progress-log');
+  evtSource = new EventSource('/stream');
+  evtSource.onmessage = function(e) {
+    const data = JSON.parse(e.data);
+    if (data.done) {
+      evtSource.close();
+      document.getElementById('run-btn').disabled = false;
+      document.getElementById('run-btn').textContent = '▶ Run Pipeline';
+      log.textContent += '\n✅ Done! Refreshing…';
+      setTimeout(() => location.reload(), 2000);
+    } else if (data.message) {
+      log.textContent += data.message + '\n';
+      log.scrollTop = log.scrollHeight;
+    }
+  };
+  evtSource.onerror = function() {
+    evtSource.close();
+    document.getElementById('run-btn').disabled = false;
+    document.getElementById('run-btn').textContent = '▶ Run Pipeline';
+  };
+}
+
+function uploadCV(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const status = document.getElementById('upload-status');
+  status.innerHTML = '⏳ Uploading…';
+  const fd = new FormData();
+  fd.append('cv', file);
+  fetch('/upload-cv', { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        status.innerHTML = `<span style="color:var(--red)">❌ ${data.error}</span>`;
+      } else {
+        status.innerHTML = `<span style="color:var(--green)">✅ Uploaded: ${data.filename}</span>`;
+        setTimeout(() => location.reload(), 1000);
+      }
+    });
+}
+
+// Drag-and-drop
+const zone = document.getElementById('upload-zone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+zone.addEventListener('drop', e => {
+  e.preventDefault();
+  zone.classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (file) {
+    const input = document.getElementById('cv-input');
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    uploadCV(input);
+  }
+});
+</script>
+{% endblock %}
