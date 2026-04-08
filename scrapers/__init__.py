@@ -3,6 +3,9 @@ from scrapers.indeed import IndeedScraper
 from scrapers.remoteok import RemoteOKScraper
 from scrapers.weworkremotely import WeWorkRemotelyScraper
 from scrapers.google import GoogleJobsScraper
+from scrapers.jobicy import JobicyScraper
+from scrapers.remotive import RemotiveScraper
+from scrapers.arbeitnow import ArbeitnowScraper
 
 __all__ = [
     "LinkedInScraper",
@@ -10,4 +13,7 @@ __all__ = [
     "RemoteOKScraper",
     "WeWorkRemotelyScraper",
     "GoogleJobsScraper",
+    "JobicyScraper",
+    "RemotiveScraper",
+    "ArbeitnowScraper",
 ]

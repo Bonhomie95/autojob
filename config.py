@@ -88,6 +88,9 @@ class Config:
         self.SCRAPE_REMOTEOK: bool       = os.getenv("SCRAPE_REMOTEOK", "true").lower() == "true"
         self.SCRAPE_WEWORKREMOTELY: bool = os.getenv("SCRAPE_WEWORKREMOTELY", "true").lower() == "true"
         self.SCRAPE_GOOGLE: bool         = os.getenv("SCRAPE_GOOGLE", "false").lower() == "true"
+        self.SCRAPE_JOBICY: bool         = os.getenv("SCRAPE_JOBICY", "true").lower() == "true"
+        self.SCRAPE_REMOTIVE: bool       = os.getenv("SCRAPE_REMOTIVE", "true").lower() == "true"
+        self.SCRAPE_ARBEITNOW: bool      = os.getenv("SCRAPE_ARBEITNOW", "true").lower() == "true"
         self.MAX_JOBS_PER_BOARD: int     = int(os.getenv("MAX_JOBS_PER_BOARD", 50))
         self.LINKEDIN_EMAIL: str         = os.getenv("LINKEDIN_EMAIL", "")
         self.LINKEDIN_PASSWORD: str      = os.getenv("LINKEDIN_PASSWORD", "")

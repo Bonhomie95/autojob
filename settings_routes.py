@@ -60,12 +60,15 @@ SETTINGS_FIELDS = [
      "Comma-separated list of countries (used when Remote Only is off)"),
 
     # ── Scraper Toggles
-    ("SCRAPE_LINKEDIN",       "LinkedIn",         "bool", "Job Sources", ""),
-    ("SCRAPE_INDEED",         "Indeed (RSS)",     "bool", "Job Sources", ""),
-    ("SCRAPE_REMOTEOK",       "RemoteOK",         "bool", "Job Sources", ""),
-    ("SCRAPE_WEWORKREMOTELY", "WeWorkRemotely",   "bool", "Job Sources", ""),
-    ("SCRAPE_GOOGLE",         "Google Jobs",      "bool", "Job Sources",
-     "Results vary by region/IP — experimental"),
+    ("SCRAPE_LINKEDIN",       "LinkedIn",              "bool", "Job Sources", "Guest API — no login needed"),
+    ("SCRAPE_WEWORKREMOTELY", "WeWorkRemotely",        "bool", "Job Sources", "RSS feed — very reliable"),
+    ("SCRAPE_JOBICY",         "Jobicy",                "bool", "Job Sources", "Public JSON API — reliable"),
+    ("SCRAPE_REMOTIVE",       "Remotive",              "bool", "Job Sources", "Public JSON API — reliable"),
+    ("SCRAPE_ARBEITNOW",      "Arbeitnow",             "bool", "Job Sources", "Public JSON API — good for international remote"),
+    ("SCRAPE_REMOTEOK",       "RemoteOK",              "bool", "Job Sources", "JSON API — works, occasionally rate-limits"),
+    ("SCRAPE_INDEED",         "Indeed (RSS)",          "bool", "Job Sources", "RSS feed — less reliable than API boards"),
+    ("SCRAPE_GOOGLE",         "Google Jobs",           "bool", "Job Sources",
+     "Experimental — results vary by region/IP. Off by default."),
     ("MAX_JOBS_PER_BOARD",    "Max Jobs per Board", "number", "Job Sources",
      "Max listings fetched from each source per run"),
 
@@ -73,8 +76,9 @@ SETTINGS_FIELDS = [
     ("MIN_MATCH_SCORE",          "Min Match Score",               "number", "Scoring & Documents",
      "Groq score threshold (0–100) — jobs below this are skipped"),
     ("GENERATE_DOCS_WITHOUT_HR", "Generate Docs Without HR Contact", "bool", "Scoring & Documents",
-     "If ON, generates CV + cover letter even when no HR email or name was found. "
-     "If OFF, only generates documents for jobs where HR contact info was extracted."),
+     "ON (recommended) — generate docs for every qualified job regardless of contact info. "
+     "OFF — only generate docs when at least one contact signal exists (HR email, application email, or apply URL). "
+     "Auto-send always requires a real email address regardless of this setting."),
 
     # ── Proxy / SOCKS
     ("PROXY_ENABLED", "Enable Proxy Rotation", "bool", "Proxy / SOCKS",

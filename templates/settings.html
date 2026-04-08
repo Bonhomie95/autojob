@@ -111,10 +111,53 @@
       🔑 Update Password
     </button>
     <button onclick="testSmtp()" class="btn btn-secondary" style="font-size:.85rem; padding:.45rem 1.1rem;">
-      🔌 Test SMTP Connection
+      🔌 Test Connection
     </button>
     <span id="smtp-result" style="font-size:.85rem;"></span>
   </div>
+</div>
+
+<!-- Send Test Email card -->
+<div class="card" style="margin-bottom:1.25rem; border-color:var(--green);">
+  <div class="card-title" style="color:var(--green);">📬 Send Preview Email</div>
+  <p style="font-size:.85rem; color:var(--text-dim); margin-bottom:1rem;">
+    Sends a real email — identical to what a recruiter receives — to any address you choose.
+    Uses the most recent generated application (real subject, real body, real CV.pdf + CoverLetter.pdf attached).
+    Send to your own Gmail or Outlook to check inbox delivery, formatting and attachments.
+  </p>
+  <div style="display:grid; grid-template-columns:220px 1fr; gap:1rem; align-items:start; margin-bottom:1rem;">
+    <div>
+      <label style="font-weight:600; font-size:.875rem;">Send to</label>
+      <div style="font-size:.75rem; color:var(--text-dim); margin-top:.2rem;">Your test email address</div>
+    </div>
+    <div>
+      <input type="email" id="test-email-input"
+             placeholder="e.g. yourself@gmail.com"
+             style="width:100%; background:var(--bg); border:1px solid var(--border);
+                    color:var(--text); border-radius:6px; padding:.5rem .75rem; font-size:.875rem;">
+    </div>
+  </div>
+
+  <!-- Checklist -->
+  <div style="background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:1rem;
+              margin-bottom:1rem; font-size:.82rem; color:var(--text-dim); line-height:1.9;">
+    <div style="font-weight:600; color:var(--text); margin-bottom:.4rem;">What to check when you receive it:</div>
+    <div>☐ &nbsp;Subject line looks professional</div>
+    <div>☐ &nbsp;Email body renders correctly (not blank, no weird characters)</div>
+    <div>☐ &nbsp;CV.pdf is attached and opens correctly</div>
+    <div>☐ &nbsp;CoverLetter.pdf is attached and opens correctly</div>
+    <div>☐ &nbsp;Landed in <strong>inbox</strong>, not spam or promotions</div>
+    <div>☐ &nbsp;Sender name shows as <strong>{{ config.CANDIDATE_NAME }}</strong>, not a raw email address</div>
+  </div>
+
+  <div style="display:flex; gap:.75rem; align-items:center; flex-wrap:wrap;">
+    <button onclick="sendTestEmail()" class="btn btn-primary"
+            style="background:var(--green); font-size:.85rem; padding:.45rem 1.25rem;">
+      📧 Send Test Email
+    </button>
+    <span id="test-result" style="font-size:.85rem;"></span>
+  </div>
+  <div id="test-detail" style="margin-top:.75rem; font-size:.8rem; color:var(--text-dim); display:none;"></div>
 </div>
 
 <style>
@@ -194,8 +237,42 @@ function testSmtp() {
     });
 }
 
+function sendTestEmail() {
+  const toEmail = document.getElementById('test-email-input').value.trim();
+  const result  = document.getElementById('test-result');
+  const detail  = document.getElementById('test-detail');
+
+  if (!toEmail) {
+    result.innerHTML = '<span style="color:var(--yellow)">⚠ Enter a recipient email first</span>';
+    return;
+  }
+
+  result.innerHTML = '⏳ Sending…';
+  detail.style.display = 'none';
+
+  fetch('/api/smtp/send-test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to_email: toEmail }),
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      result.innerHTML = `<span style="color:var(--green)">✅ Sent! Check your inbox at ${toEmail}</span>`;
+      if (data.folder_used) {
+        detail.style.display = 'block';
+        detail.textContent = `Documents used from: output/${data.folder_used}`;
+      }
+    } else {
+      result.innerHTML = `<span style="color:var(--red)">❌ ${data.message || data.error}</span>`;
+    }
+  })
+  .catch(e => {
+    result.innerHTML = `<span style="color:var(--red)">❌ ${e}</span>`;
+  });
+}
+</script>
+{% endblock %}
 {% if request.args.get('saved') %}
 window.scrollTo(0, 0);
 {% endif %}
-</script>
-{% endblock %}

@@ -252,6 +252,65 @@ def test_smtp():
     return jsonify({"success": ok, "message": msg})
 
 
+@app.route("/api/smtp/send-test", methods=["POST"])
+def send_test_email():
+    """
+    Send a real preview email to any address.
+    Uses the most recent EMAIL_DRAFT.txt (real subject + body) with real attachments.
+    No 'test' labels — exactly what a recruiter would receive.
+    """
+    from mailer import send_application, smtp_configured
+    data = request.json or {}
+    to_email = (data.get("to_email") or "").strip()
+
+    if not to_email:
+        return jsonify({"success": False, "message": "No recipient email provided"}), 400
+
+    if not smtp_configured():
+        return jsonify({"success": False,
+                        "message": "SMTP not configured — set your password in Settings first"}), 400
+
+    # Find most recent output folder with both a CV.pdf and EMAIL_DRAFT.txt
+    output_root = Path(config.OUTPUT_DIR)
+    best_folder = None
+    if output_root.exists():
+        folders = sorted(
+            [d for d in output_root.iterdir()
+             if d.is_dir() and (d / "CV.pdf").exists() and (d / "EMAIL_DRAFT.txt").exists()],
+            key=lambda d: d.stat().st_mtime,
+            reverse=True,
+        )
+        if folders:
+            best_folder = str(folders[0])
+
+    if not best_folder:
+        # Fallback: any folder with CV.pdf
+        if output_root.exists():
+            folders = sorted(
+                [d for d in output_root.iterdir() if d.is_dir() and (d / "CV.pdf").exists()],
+                key=lambda d: d.stat().st_mtime, reverse=True,
+            )
+            if folders:
+                best_folder = str(folders[0])
+
+    if not best_folder:
+        return jsonify({
+            "success": False,
+            "message": "No generated documents found. Run the pipeline first.",
+        }), 400
+
+    folder_name = Path(best_folder).name
+
+    # send_application reads EMAIL_DRAFT.txt automatically when subject/body are None
+    ok, msg = send_application(to_email, best_folder)
+
+    return jsonify({
+        "success": ok,
+        "message": msg,
+        "folder_used": folder_name,
+    })
+
+
 # ─────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────
