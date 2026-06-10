@@ -212,7 +212,7 @@ function savePassword() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ SMTP_PASSWORD: pwd }),
   })
-  .then(r => r.json())
+  .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
   .then(() => {
     result.innerHTML = '<span style="color:var(--green)">✅ Password saved</span>';
     document.getElementById('smtp-password-input').value = '';
@@ -225,8 +225,8 @@ function savePassword() {
 function testSmtp() {
   const result = document.getElementById('smtp-result');
   result.textContent = '⏳ Testing connection…';
-  fetch('/api/smtp/test', { method: 'POST' })
-    .then(r => r.json())
+  fetch('/api/smtp/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
+    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
     .then(data => {
       result.innerHTML = data.success
         ? `<span style="color:var(--green)">${data.message}</span>`
@@ -255,7 +255,7 @@ function sendTestEmail() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ to_email: toEmail }),
   })
-  .then(r => r.json())
+  .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
   .then(data => {
     if (data.success) {
       result.innerHTML = `<span style="color:var(--green)">✅ Sent! Check your inbox at ${toEmail}</span>`;

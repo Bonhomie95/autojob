@@ -25,7 +25,6 @@ class Config:
         self._load()
 
     def reload(self):
-        """Re-read .env and update all values in place."""
         load_dotenv(override=True)
         self._load()
 
@@ -91,6 +90,7 @@ class Config:
         self.SCRAPE_JOBICY: bool         = os.getenv("SCRAPE_JOBICY", "true").lower() == "true"
         self.SCRAPE_REMOTIVE: bool       = os.getenv("SCRAPE_REMOTIVE", "true").lower() == "true"
         self.SCRAPE_ARBEITNOW: bool      = os.getenv("SCRAPE_ARBEITNOW", "true").lower() == "true"
+        self.SCRAPE_HACKERNEWS: bool     = os.getenv("SCRAPE_HACKERNEWS", "true").lower() == "true"
         self.MAX_JOBS_PER_BOARD: int     = int(os.getenv("MAX_JOBS_PER_BOARD", 50))
         self.LINKEDIN_EMAIL: str         = os.getenv("LINKEDIN_EMAIL", "")
         self.LINKEDIN_PASSWORD: str      = os.getenv("LINKEDIN_PASSWORD", "")
@@ -98,6 +98,8 @@ class Config:
         # ── Scoring & docs
         self.MIN_MATCH_SCORE: int           = int(os.getenv("MIN_MATCH_SCORE", 60))
         self.GENERATE_DOCS_WITHOUT_HR: bool = os.getenv("GENERATE_DOCS_WITHOUT_HR", "true").lower() == "true"
+        # Fetch a brief company summary before scoring for richer personalisation
+        self.ENRICH_COMPANY_DATA: bool      = os.getenv("ENRICH_COMPANY_DATA", "true").lower() == "true"
 
         # ── Paths
         self.OUTPUT_DIR: str = os.getenv("OUTPUT_DIR", "output")
@@ -105,13 +107,12 @@ class Config:
         self.DB_PATH: str    = os.getenv("DB_PATH", "jobhunter.db")
 
         # ── Flask
-        self.FLASK_PORT: int  = int(os.getenv("FLASK_PORT", 5000))
+        self.FLASK_PORT: int   = int(os.getenv("FLASK_PORT", 5000))
         self.FLASK_DEBUG: bool = os.getenv("FLASK_DEBUG", "false").lower() == "true"
-        self.TIMEZONE: str    = os.getenv("TIMEZONE", "UTC")
+        self.TIMEZONE: str     = os.getenv("TIMEZONE", "UTC")
 
         # ── Proxy / SOCKS
         self.PROXY_ENABLED: bool = os.getenv("PROXY_ENABLED", "false").lower() == "true"
-        # Rotate through each on failure. Format: socks5://user:pass@host:port  or  host:port
         raw_proxies = os.getenv("PROXY_LIST", "")
         self.PROXY_LIST: list[str] = []
         if raw_proxies:
@@ -124,16 +125,53 @@ class Config:
                 self.PROXY_LIST.append(p)
 
         # ── SMTP
-        self.SMTP_HOST: str      = os.getenv("SMTP_HOST", "bonhomieinc.dev")
-        self.SMTP_PORT: int      = int(os.getenv("SMTP_PORT", "465"))
-        self.SMTP_USER: str      = os.getenv("SMTP_USER", "bonhomie@bonhomieinc.dev")
+        self.SMTP_HOST: str      = os.getenv("SMTP_HOST", "smtp.gmail.com")
+        self.SMTP_PORT: int      = int(os.getenv("SMTP_PORT", "587"))
+        self.SMTP_USER: str      = os.getenv("SMTP_USER", "")
         self.SMTP_PASSWORD: str  = os.getenv("SMTP_PASSWORD", "")
-        self.SMTP_FROM: str      = os.getenv("SMTP_FROM", "bonhomie@bonhomieinc.dev")
-        self.SMTP_TLS: bool      = os.getenv("SMTP_TLS", "false").lower() == "true"
-        self.SMTP_AUTO_SEND: bool  = os.getenv("SMTP_AUTO_SEND", "false").lower() == "true"
+        self.SMTP_FROM: str      = os.getenv("SMTP_FROM", "")
+        self.SMTP_TLS: bool      = os.getenv("SMTP_TLS", "true").lower() == "true"
+        self.SMTP_AUTO_SEND: bool   = os.getenv("SMTP_AUTO_SEND", "false").lower() == "true"
         self.SMTP_ATTACH_PDF: bool  = os.getenv("SMTP_ATTACH_PDF", "true").lower() == "true"
         self.SMTP_ATTACH_DOCX: bool = os.getenv("SMTP_ATTACH_DOCX", "false").lower() == "true"
         self.SMTP_RETRY_COUNT: int  = int(os.getenv("SMTP_RETRY_COUNT", "1"))
+        self.SMTP_FORMAT: str       = os.getenv("SMTP_FORMAT", "plain").lower()
+        self.SMTP_THROTTLE_SECONDS: int = int(os.getenv("SMTP_THROTTLE_SECONDS", "8"))
+
+        # ── Deduplication
+        # Days to remember a sent email address before allowing re-send
+        self.DEDUP_WINDOW_DAYS: int = int(os.getenv("DEDUP_WINDOW_DAYS", "30"))
+
+        # ── Follow-up
+        self.FOLLOW_UP_ENABLED: bool = os.getenv("FOLLOW_UP_ENABLED", "true").lower() == "true"
+        # Days after initial send before follow-up fires (default 6 = ~1 working week)
+        self.FOLLOW_UP_DAYS: int = int(os.getenv("FOLLOW_UP_DAYS", "6"))
+
+        # ── IMAP (for reply detection)
+        # Defaults to Gmail IMAP; works with any IMAP server
+        self.IMAP_HOST: str     = os.getenv("IMAP_HOST", "imap.gmail.com")
+        self.IMAP_PORT: int     = int(os.getenv("IMAP_PORT", "993"))
+        self.IMAP_USER: str     = os.getenv("IMAP_USER", self.SMTP_USER)
+        self.IMAP_PASSWORD: str = os.getenv("IMAP_PASSWORD", self.SMTP_PASSWORD)
+
+        # ── Scheduler (auto-run pipeline on a cron schedule)
+        # SCHEDULE_CRON uses standard 5-field cron syntax. Examples:
+        #   "0 8 * * 1-5"   = Mon-Fri at 08:00 local time
+        #   "0 9 * * *"     = Every day at 09:00
+        self.SCHEDULE_ENABLED: bool  = os.getenv("SCHEDULE_ENABLED", "false").lower() == "true"
+        self.SCHEDULE_CRON: str      = os.getenv("SCHEDULE_CRON", "0 8 * * 1-5")
+        self.SCHEDULE_FOLLOWUP: bool = os.getenv("SCHEDULE_FOLLOWUP", "true").lower() == "true"
+
+        # ── Notifications (Telegram)
+        # Create a bot at t.me/BotFather, get your chat_id via t.me/userinfobot
+        self.TELEGRAM_ENABLED: bool  = os.getenv("TELEGRAM_ENABLED", "false").lower() == "true"
+        self.TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        self.TELEGRAM_CHAT_ID: str   = os.getenv("TELEGRAM_CHAT_ID", "")
+
+        # ── CV Version Management
+        # Leave blank = auto-pick first file found in input/ (original behaviour)
+        # Set to a filename to pin a specific CV (e.g. CV_web3.docx)
+        self.ACTIVE_CV: str = os.getenv("ACTIVE_CV", "")
 
 
 config = Config()

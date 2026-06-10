@@ -13,6 +13,7 @@ from scrapers import (
     RemoteOKScraper, WeWorkRemotelyScraper,
     GoogleJobsScraper, JobicyScraper,
     RemotiveScraper, ArbeitnowScraper,
+    HackerNewsScraper,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,14 +23,32 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ──────────────────────────────────────────────────────────
 
-def _get_cv_text() -> str:
+def _get_cv_text(cv_filename: str = "") -> str:
+    """
+    Load CV text. Priority:
+      1. cv_filename argument (passed from run_pipeline for per-run override)
+      2. config.ACTIVE_CV (set in .env or via Settings page)
+      3. First file found in input/ (original auto-pick behaviour)
+    """
     input_dir = Path(config.INPUT_DIR)
     input_dir.mkdir(exist_ok=True)
+
+    # Determine which file to use
+    pin = cv_filename or getattr(config, "ACTIVE_CV", "")
+    if pin:
+        pinned = input_dir / pin
+        if pinned.exists():
+            logger.info(f"[Pipeline] Using pinned CV: {pinned.name}")
+            return extract_cv_text(str(pinned))
+        else:
+            logger.warning(f"[Pipeline] Pinned CV '{pin}' not found — falling back to auto-pick")
+
     for ext in ("*.docx", "*.pdf", "*.txt"):
         matches = sorted(input_dir.glob(ext))
         if matches:
-            logger.info(f"[Pipeline] Using CV: {matches[0]}")
+            logger.info(f"[Pipeline] Using CV: {matches[0].name}")
             return extract_cv_text(str(matches[0]))
+
     logger.error("[Pipeline] No CV found in input/ folder.")
     return ""
 
@@ -43,41 +62,24 @@ def _get_scrapers() -> list:
     if config.SCRAPE_JOBICY:         scrapers.append(JobicyScraper())
     if config.SCRAPE_REMOTIVE:       scrapers.append(RemotiveScraper())
     if config.SCRAPE_ARBEITNOW:      scrapers.append(ArbeitnowScraper())
+    if config.SCRAPE_HACKERNEWS:     scrapers.append(HackerNewsScraper())
     if config.SCRAPE_GOOGLE:         scrapers.append(GoogleJobsScraper())
     return scrapers
 
 
-def _has_sendable_email(contact: dict, job: dict) -> bool:
-    """Return True only if we have an actual email address to send to."""
-    return bool(
-        contact.get("hr_email") or
-        contact.get("application_email") or
-        job.get("hr_email") or
-        job.get("application_email")
-    )
-
-
-def _load_incomplete_jobs() -> list[dict]:
-    """
-    Resume support: find jobs from the DB that were interrupted mid-pipeline.
-    Returns jobs needing docs generated or emails re-sent.
-    """
+def _load_incomplete_jobs() -> tuple[list[dict], list[dict]]:
     with get_conn() as conn:
-        # Jobs scored/qualified but docs never generated (status still 'pending' with score)
         pending_docs = conn.execute(
             """SELECT * FROM jobs
                WHERE status = 'pending' AND score >= ?
                ORDER BY score DESC""",
             (config.MIN_MATCH_SCORE,),
         ).fetchall()
-
-        # Jobs with docs done but email failed — retry
         failed_email = conn.execute(
             """SELECT * FROM jobs
                WHERE status = 'done' AND email_status = 'failed'
                ORDER BY created_at DESC""",
         ).fetchall()
-
     return [dict(r) for r in pending_docs], [dict(r) for r in failed_email]
 
 
@@ -85,7 +87,7 @@ def _load_incomplete_jobs() -> list[dict]:
 # Main pipeline
 # ──────────────────────────────────────────────────────────
 
-def run_pipeline(progress_cb=None) -> dict:
+def run_pipeline(progress_cb=None, cv_filename: str = "") -> dict:
     def emit(msg: str):
         logger.info(msg)
         if progress_cb:
@@ -99,24 +101,25 @@ def run_pipeline(progress_cb=None) -> dict:
         f"⚙ Config loaded — "
         f"SMTP: {'ON' if config.SMTP_AUTO_SEND else 'OFF'} | "
         f"Proxy: {'ON (' + str(len(config.PROXY_LIST)) + ')' if config.PROXY_ENABLED and config.PROXY_LIST else 'OFF'} | "
-        f"HR-only docs: {'YES' if not config.GENERATE_DOCS_WITHOUT_HR else 'NO'}"
+        f"HR-only docs: {'YES' if not config.GENERATE_DOCS_WITHOUT_HR else 'NO'} | "
+        f"Company enrichment: {'ON' if str(getattr(config, 'ENRICH_COMPANY_DATA', 'true')).lower() == 'true' else 'OFF'}"
     )
 
     output_dir = Path(config.OUTPUT_DIR)
     output_dir.mkdir(exist_ok=True)
 
-    cv_text = _get_cv_text()
+    cv_text = _get_cv_text(cv_filename)
     if not cv_text:
         finish_run(run_id, 0, 0, 0, status="failed")
         return {"error": "No CV found in input/ folder."}
 
-    # ── Resume: pick up interrupted jobs ───────────────────────────────────
+    # ── Resume: pick up interrupted jobs ───────────────────
     resume_docs, resume_emails = _load_incomplete_jobs()
     if resume_docs or resume_emails:
         emit(f"🔄 Resuming: {len(resume_docs)} jobs need docs, "
              f"{len(resume_emails)} failed emails to retry")
 
-    # ── Step 1: Scrape ──────────────────────────────────────────────────────
+    # ── Step 1: Scrape ──────────────────────────────────────
     emit("🔍 Scraping job boards…")
     all_jobs: list[dict] = []
     location = "Remote" if config.REMOTE_ONLY else ", ".join(config.TARGET_COUNTRIES)
@@ -124,7 +127,7 @@ def run_pipeline(progress_cb=None) -> dict:
     for scraper in _get_scrapers():
         emit(f"  → {scraper.name}…")
         try:
-            jobs = scraper.scrape(config.TARGET_ROLES, location)[: config.MAX_JOBS_PER_BOARD]
+            jobs = scraper.scrape(config.TARGET_ROLES, location)[:config.MAX_JOBS_PER_BOARD]
             all_jobs.extend(jobs)
             emit(f"  ✓ {scraper.name}: {len(jobs)} jobs")
         except Exception as e:
@@ -132,12 +135,12 @@ def run_pipeline(progress_cb=None) -> dict:
 
     emit(f"📋 Total scraped: {len(all_jobs)}")
 
-    # ── Step 2: Deduplicate & Store ─────────────────────────────────────────
+    # ── Step 2: Deduplicate & Store ─────────────────────────
     new_jobs = [j for j in all_jobs if j.get("url") and insert_job(j)]
     emit(f"🆕 New (not seen before): {len(new_jobs)}")
     jobs_found = len(new_jobs)
 
-    # ── Step 3: Score new jobs ──────────────────────────────────────────────
+    # ── Step 3: Score new jobs ──────────────────────────────
     emit("🤖 Scoring with Groq…")
     qualified: list[dict] = []
 
@@ -158,9 +161,10 @@ def run_pipeline(progress_cb=None) -> dict:
 
             if score >= config.MIN_MATCH_SCORE:
                 job["_score_data"] = score_data
-                job["_job_id"] = job_id
+                job["_job_id"]     = job_id
                 qualified.append(job)
-                emit(f"    ✅ {score}/100 — qualified")
+                insight = score_data.get("company_insight", "")
+                emit(f"    ✅ {score}/100 — qualified" + (f" | {insight[:60]}…" if insight else ""))
             else:
                 update_job(job_id, status="skipped")
                 emit(f"    ⚪ {score}/100 — below {config.MIN_MATCH_SCORE}")
@@ -169,11 +173,12 @@ def run_pipeline(progress_cb=None) -> dict:
 
     jobs_scored = len(qualified)
 
-    # Add resumed pending-doc jobs to qualified
+    # Add resumed pending-doc jobs
     for row in resume_docs:
-        row["_job_id"] = row["id"]
-        row["_score_data"] = {"score": row.get("score", 0), "ats_keywords": [], "match_reasons": [], "gaps": []}
-        row["_contact"] = {
+        row["_job_id"]     = row["id"]
+        row["_score_data"] = {"score": row.get("score", 0), "ats_keywords": [],
+                              "match_reasons": [], "gaps": [], "company_insight": ""}
+        row["_contact"]    = {
             "hr_name":          row.get("hr_name", ""),
             "hr_email":         row.get("hr_email", ""),
             "hr_title":         row.get("hr_title", ""),
@@ -184,14 +189,17 @@ def run_pipeline(progress_cb=None) -> dict:
 
     emit(f"✅ Total to process: {len(qualified)} jobs")
 
-    # ── Step 4: Extract HR Contacts ─────────────────────────────────────────
+    # ── Step 4: Extract HR Contacts ─────────────────────────
     emit("📞 Extracting HR contacts…")
     for job in qualified:
-        # Skip if already extracted (resumed jobs have it from DB)
         if job.get("_contact"):
             continue
         try:
             contact = extract_contacts(job)
+            scraper_email = job.get("application_email") or job.get("hr_email")
+            if scraper_email and not (contact.get("hr_email") or contact.get("application_email")):
+                contact["application_email"] = scraper_email
+                contact["contact_notes"]     = contact.get("contact_notes") or "Email from job source"
             job["_contact"] = contact
             job_id = job["_job_id"]
             update_job(
@@ -210,7 +218,7 @@ def run_pipeline(progress_cb=None) -> dict:
             emit(f"  ⚠ Contact error for {job.get('company')}: {e}")
             job["_contact"] = {}
 
-    # ── Step 5: Generate Documents ──────────────────────────────────────────
+    # ── Step 5: Generate Documents ──────────────────────────
     emit("📄 Generating documents…")
     docs_generated = 0
     emails_sent    = 0
@@ -221,18 +229,10 @@ def run_pipeline(progress_cb=None) -> dict:
             score_data = job.get("_score_data", {})
             job_id     = job.get("_job_id") or job.get("id", "")
 
-            # ── Contact gate ─────────────────────────────────────────────
-            # When GENERATE_DOCS_WITHOUT_HR=false:
-            #   - application_url = sufficient to generate docs (you apply via link)
-            #   - actual email (hr_email / application_email) = needed for auto-send
-            # This way docs are generated for all reachable jobs, auto-send only
-            # fires when we have a real email address.
             if not config.GENERATE_DOCS_WITHOUT_HR:
                 has_any_contact = bool(
-                    contact.get("hr_email") or
-                    contact.get("application_email") or
-                    contact.get("application_url") or
-                    job.get("url")   # the job listing URL itself is always a fallback
+                    contact.get("hr_email") or contact.get("application_email") or
+                    contact.get("application_url") or job.get("url")
                 )
                 if not has_any_contact:
                     update_job(job_id, status="skipped",
@@ -240,12 +240,11 @@ def run_pipeline(progress_cb=None) -> dict:
                     emit(f"  ⏭ No contact at all — skipping {job.get('company')}")
                     continue
 
-            # Skip if docs already exist (resumed job already had them)
             if job.get("output_dir") and Path(job["output_dir"]).exists():
                 emit(f"  ↩ Already generated: {Path(job['output_dir']).name}")
-                # Jump straight to email send if needed
                 if config.SMTP_AUTO_SEND and job.get("email_status") in ("failed", "no_contact", None, ""):
-                    _try_send(job, contact, emit)
+                    if _try_send(job, contact, emit):
+                        emails_sent += 1
                 continue
 
             success = generate_documents(job, cv_text, contact, score_data, str(output_dir))
@@ -258,30 +257,43 @@ def run_pipeline(progress_cb=None) -> dict:
                 job["output_dir"]  = folder
                 job["_output_dir"] = folder
                 emit(f"  ✓ {company_dir}_{role_dir}/")
-
-                if config.SMTP_AUTO_SEND:
-                    sent = _try_send(job, contact, emit)
-                    if sent:
-                        emails_sent += 1
             else:
                 emit(f"  ✗ Doc generation failed for {job.get('company')}")
         except Exception as e:
             emit(f"  ⚠ Error for {job.get('company')}: {e}")
 
-    # ── Resume: retry failed emails ─────────────────────────────────────────
+    # ── Step 6: Grouped email sends ─────────────────────────
+    if config.SMTP_AUTO_SEND:
+        # Only send for jobs that have output dirs and no email sent yet
+        to_send = [
+            j for j in qualified
+            if j.get("output_dir") and Path(j.get("output_dir", "")).exists()
+            and j.get("email_status") not in ("sent", "no_contact")
+        ]
+
+        if to_send:
+            emit(f"📧 Sending {len(to_send)} application(s) (grouped by contact)…")
+            from mailer import group_jobs_by_contact, send_grouped_application
+            groups = group_jobs_by_contact(to_send)
+            emit(f"  → {len(groups)} unique contact(s) / group(s)")
+            for group in groups:
+                sent, skipped = send_grouped_application(group, emit=emit)
+                emails_sent += sent
+
+    # ── Resume: retry failed emails ─────────────────────────
     if resume_emails and config.SMTP_AUTO_SEND:
         emit(f"🔁 Retrying {len(resume_emails)} previously failed emails…")
         from mailer import send_application, smtp_configured
         if smtp_configured():
+            from datetime import datetime
             for job in resume_emails:
-                to_email = job.get("hr_email") or job.get("application_email") or ""
+                to_email       = job.get("hr_email") or job.get("application_email") or ""
                 output_dir_job = job.get("output_dir", "")
                 if not to_email or not output_dir_job:
                     continue
                 emit(f"  📧 Retry → {job.get('company')} ({to_email})")
                 ok, msg = send_application(to_email, output_dir_job)
                 if ok:
-                    from datetime import datetime
                     update_job(job["id"], email_status="sent",
                                email_sent_at=datetime.utcnow().isoformat(),
                                email_error="", status="applied")
@@ -299,20 +311,28 @@ def run_pipeline(progress_cb=None) -> dict:
         summary += f" (including resumed jobs)"
     emit(summary)
 
-    return {
-        "run_id": run_id, "jobs_found": jobs_found,
-        "jobs_scored": jobs_scored, "docs_generated": docs_generated,
-        "emails_sent": emails_sent,
+    result = {
+        "run_id":        run_id,
+        "jobs_found":    jobs_found,
+        "jobs_scored":   jobs_scored,
+        "docs_generated":docs_generated,
+        "emails_sent":   emails_sent,
     }
+
+    try:
+        from notifier import notify_run_complete
+        notify_run_complete(result)
+    except Exception:
+        pass
+
+    return result
 
 
 def _try_send(job: dict, contact: dict, emit) -> bool:
-    """Attempt auto-send. Only fires when a real email address exists."""
     from mailer import send_for_job, smtp_configured
     if not smtp_configured():
         emit("  ⚠ Auto-send ON but SMTP password not set")
         return False
-    # Require an actual email — application URL alone is not enough to auto-send
     has_email = bool(
         contact.get("hr_email") or contact.get("application_email") or
         job.get("hr_email") or job.get("application_email")

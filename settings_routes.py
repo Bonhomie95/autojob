@@ -21,95 +21,312 @@ ENV_PATH = Path(".env")
 
 SETTINGS_FIELDS = [
     # ── Candidate
-    ("CANDIDATE_NAME",     "Full Name",          "text",   "Candidate Info", "Your full name as it appears on documents"),
-    ("CANDIDATE_EMAIL",    "Email",               "text",   "Candidate Info", "Contact email on CV and cover letters"),
-    ("CANDIDATE_PHONE",    "Phone",               "text",   "Candidate Info", "Phone number including country code"),
-    ("CANDIDATE_LOCATION", "Location",            "text",   "Candidate Info", "e.g. Lagos, Nigeria (Open to Remote)"),
-    ("CANDIDATE_LINKEDIN", "LinkedIn URL",        "text",   "Candidate Info", "e.g. linkedin.com/in/yourname"),
-    ("CANDIDATE_GITHUB",   "GitHub URL",          "text",   "Candidate Info", "e.g. github.com/yourname"),
-    ("CANDIDATE_PROJECTS", "Project Names",       "textarea", "Candidate Info",
-     "Comma-separated list of your exact project names — overrides auto-detection from CV. "
-     "Leave blank to auto-detect. Example: PulseQuiz,Property Wey International,AI Trader"),
-
+    (
+        "CANDIDATE_NAME",
+        "Full Name",
+        "text",
+        "Candidate Info",
+        "Your full name as it appears on documents",
+    ),
+    (
+        "CANDIDATE_EMAIL",
+        "Email",
+        "text",
+        "Candidate Info",
+        "Contact email on CV and cover letters",
+    ),
+    (
+        "CANDIDATE_PHONE",
+        "Phone",
+        "text",
+        "Candidate Info",
+        "Phone number including country code",
+    ),
+    (
+        "CANDIDATE_LOCATION",
+        "Location",
+        "text",
+        "Candidate Info",
+        "e.g. Lagos, Nigeria (Open to Remote)",
+    ),
+    (
+        "CANDIDATE_LINKEDIN",
+        "LinkedIn URL",
+        "text",
+        "Candidate Info",
+        "e.g. linkedin.com/in/yourname",
+    ),
+    (
+        "CANDIDATE_GITHUB",
+        "GitHub URL",
+        "text",
+        "Candidate Info",
+        "e.g. github.com/yourname",
+    ),
+    (
+        "CANDIDATE_PROJECTS",
+        "Project Names",
+        "textarea",
+        "Candidate Info",
+        "Comma-separated list of your exact project names — overrides auto-detection from CV. "
+        "Leave blank to auto-detect. Example: PulseQuiz,Property Wey International,AI Trader",
+    ),
     # ── Education (up to 5 entries)
-    ("CANDIDATE_EDUCATION_1", "Education 1", "text", "Education",
-     "Format: Degree | Institution | Year(s)  e.g. BSc, Computer Science | Lagos State University | 2018–2023"),
-    ("CANDIDATE_EDUCATION_2", "Education 2", "text", "Education", "Same format — leave blank if not needed"),
-    ("CANDIDATE_EDUCATION_3", "Education 3", "text", "Education", "Same format — leave blank if not needed"),
-    ("CANDIDATE_EDUCATION_4", "Education 4", "text", "Education", "Same format — leave blank if not needed"),
-    ("CANDIDATE_EDUCATION_5", "Education 5", "text", "Education", "Same format — leave blank if not needed"),
-
+    (
+        "CANDIDATE_EDUCATION_1",
+        "Education 1",
+        "text",
+        "Education",
+        "Format: Degree | Institution | Year(s)  e.g. BSc, Computer Science | Lagos State University | 2018–2023",
+    ),
+    (
+        "CANDIDATE_EDUCATION_2",
+        "Education 2",
+        "text",
+        "Education",
+        "Same format — leave blank if not needed",
+    ),
+    (
+        "CANDIDATE_EDUCATION_3",
+        "Education 3",
+        "text",
+        "Education",
+        "Same format — leave blank if not needed",
+    ),
+    (
+        "CANDIDATE_EDUCATION_4",
+        "Education 4",
+        "text",
+        "Education",
+        "Same format — leave blank if not needed",
+    ),
+    (
+        "CANDIDATE_EDUCATION_5",
+        "Education 5",
+        "text",
+        "Education",
+        "Same format — leave blank if not needed",
+    ),
     # ── Target Roles
-    ("TARGET_ROLES",    "Target Roles",    "textarea", "Job Targeting",
-     "Comma-separated list of job titles to search for"),
-    ("KEYWORDS",        "Match Keywords",  "textarea", "Job Targeting",
-     "Comma-separated keywords that should match in job descriptions"),
-    ("BLACKLIST_KEYWORDS", "Blacklist Keywords", "textarea", "Job Targeting",
-     "Jobs containing these keywords are auto-skipped (comma-separated)"),
-    ("EXPERIENCE_LEVEL", "Experience Level", "text", "Job Targeting",
-     "Comma-separated: junior, mid, senior"),
-
+    (
+        "TARGET_ROLES",
+        "Target Roles",
+        "textarea",
+        "Job Targeting",
+        "Comma-separated list of job titles to search for",
+    ),
+    (
+        "KEYWORDS",
+        "Match Keywords",
+        "textarea",
+        "Job Targeting",
+        "Comma-separated keywords that should match in job descriptions",
+    ),
+    (
+        "BLACKLIST_KEYWORDS",
+        "Blacklist Keywords",
+        "textarea",
+        "Job Targeting",
+        "Jobs containing these keywords are auto-skipped (comma-separated)",
+    ),
+    (
+        "EXPERIENCE_LEVEL",
+        "Experience Level",
+        "text",
+        "Job Targeting",
+        "Comma-separated: junior, mid, senior",
+    ),
     # ── Salary
-    ("MIN_SALARY",       "Min Salary",      "number", "Salary", "Minimum acceptable salary (where listed)"),
-    ("MAX_SALARY",       "Max Salary",      "number", "Salary", "Maximum salary range"),
-    ("SALARY_CURRENCY",  "Currency",        "text",   "Salary", "e.g. USD, GBP, EUR"),
-
+    (
+        "MIN_SALARY",
+        "Min Salary",
+        "number",
+        "Salary",
+        "Minimum acceptable salary (where listed)",
+    ),
+    ("MAX_SALARY", "Max Salary", "number", "Salary", "Maximum salary range"),
+    ("SALARY_CURRENCY", "Currency", "text", "Salary", "e.g. USD, GBP, EUR"),
     # ── Location
-    ("REMOTE_ONLY",      "Remote Only",     "bool",   "Location", "Only show remote jobs"),
-    ("TARGET_COUNTRIES", "Target Countries", "textarea", "Location",
-     "Comma-separated list of countries (used when Remote Only is off)"),
-
+    ("REMOTE_ONLY", "Remote Only", "bool", "Location", "Only show remote jobs"),
+    (
+        "TARGET_COUNTRIES",
+        "Target Countries",
+        "textarea",
+        "Location",
+        "Comma-separated list of countries (used when Remote Only is off)",
+    ),
     # ── Scraper Toggles
-    ("SCRAPE_LINKEDIN",       "LinkedIn",              "bool", "Job Sources", "Guest API — no login needed"),
-    ("SCRAPE_WEWORKREMOTELY", "WeWorkRemotely",        "bool", "Job Sources", "RSS feed — very reliable"),
-    ("SCRAPE_JOBICY",         "Jobicy",                "bool", "Job Sources", "Public JSON API — reliable"),
-    ("SCRAPE_REMOTIVE",       "Remotive",              "bool", "Job Sources", "Public JSON API — reliable"),
-    ("SCRAPE_ARBEITNOW",      "Arbeitnow",             "bool", "Job Sources", "Public JSON API — good for international remote"),
-    ("SCRAPE_REMOTEOK",       "RemoteOK",              "bool", "Job Sources", "JSON API — works, occasionally rate-limits"),
-    ("SCRAPE_INDEED",         "Indeed (RSS)",          "bool", "Job Sources", "RSS feed — less reliable than API boards"),
-    ("SCRAPE_GOOGLE",         "Google Jobs",           "bool", "Job Sources",
-     "Experimental — results vary by region/IP. Off by default."),
-    ("MAX_JOBS_PER_BOARD",    "Max Jobs per Board", "number", "Job Sources",
-     "Max listings fetched from each source per run"),
-
+    (
+        "SCRAPE_LINKEDIN",
+        "LinkedIn",
+        "bool",
+        "Job Sources",
+        "Guest API — no login needed",
+    ),
+    (
+        "SCRAPE_WEWORKREMOTELY",
+        "WeWorkRemotely",
+        "bool",
+        "Job Sources",
+        "RSS feed — very reliable",
+    ),
+    ("SCRAPE_JOBICY", "Jobicy", "bool", "Job Sources", "Public JSON API — reliable"),
+    (
+        "SCRAPE_REMOTIVE",
+        "Remotive",
+        "bool",
+        "Job Sources",
+        "Public JSON API — reliable",
+    ),
+    (
+        "SCRAPE_ARBEITNOW",
+        "Arbeitnow",
+        "bool",
+        "Job Sources",
+        "Public JSON API — good for international remote",
+    ),
+    (
+        "SCRAPE_REMOTEOK",
+        "RemoteOK",
+        "bool",
+        "Job Sources",
+        "JSON API — works, occasionally rate-limits",
+    ),
+    (
+        "SCRAPE_INDEED",
+        "Indeed (RSS)",
+        "bool",
+        "Job Sources",
+        "RSS feed — less reliable than API boards",
+    ),
+    (
+        "SCRAPE_GOOGLE",
+        "Google Jobs",
+        "bool",
+        "Job Sources",
+        "Experimental — results vary by region/IP. Off by default.",
+    ),
+    (
+        "MAX_JOBS_PER_BOARD",
+        "Max Jobs per Board",
+        "number",
+        "Job Sources",
+        "Max listings fetched from each source per run",
+    ),
     # ── Scoring & Documents
-    ("MIN_MATCH_SCORE",          "Min Match Score",               "number", "Scoring & Documents",
-     "Groq score threshold (0–100) — jobs below this are skipped"),
-    ("GENERATE_DOCS_WITHOUT_HR", "Generate Docs Without HR Contact", "bool", "Scoring & Documents",
-     "ON (recommended) — generate docs for every qualified job regardless of contact info. "
-     "OFF — only generate docs when at least one contact signal exists (HR email, application email, or apply URL). "
-     "Auto-send always requires a real email address regardless of this setting."),
-
+    (
+        "MIN_MATCH_SCORE",
+        "Min Match Score",
+        "number",
+        "Scoring & Documents",
+        "Groq score threshold (0–100) — jobs below this are skipped",
+    ),
+    (
+        "GENERATE_DOCS_WITHOUT_HR",
+        "Generate Docs Without HR Contact",
+        "bool",
+        "Scoring & Documents",
+        "ON (recommended) — generate docs for every qualified job regardless of contact info. "
+        "OFF — only generate docs when at least one contact signal exists (HR email, application email, or apply URL). "
+        "Auto-send always requires a real email address regardless of this setting.",
+    ),
     # ── Proxy / SOCKS
-    ("PROXY_ENABLED", "Enable Proxy Rotation", "bool", "Proxy / SOCKS",
-     "Route scraper requests through SOCKS/HTTP proxies to avoid IP blocks"),
-    ("PROXY_LIST", "Proxy List", "textarea", "Proxy / SOCKS",
-     "One proxy per line (or comma-separated). Formats: "
-     "socks5://user:pass@host:port  ·  socks5://host:port  ·  host:port (assumed socks5)  ·  http://host:port. "
-     "Failed proxies are automatically skipped for that run and the next one tried."),
-
+    (
+        "PROXY_ENABLED",
+        "Enable Proxy Rotation",
+        "bool",
+        "Proxy / SOCKS",
+        "Route scraper requests through SOCKS/HTTP proxies to avoid IP blocks",
+    ),
+    (
+        "PROXY_LIST",
+        "Proxy List",
+        "textarea",
+        "Proxy / SOCKS",
+        "One proxy per line (or comma-separated). Formats: "
+        "socks5://user:pass@host:port  ·  socks5://host:port  ·  host:port (assumed socks5)  ·  http://host:port. "
+        "Failed proxies are automatically skipped for that run and the next one tried.",
+    ),
     # ── App
-    ("TIMEZONE", "Timezone", "text", "App", "e.g. Africa/Lagos, America/New_York, Europe/London"),
-    ("FLASK_PORT", "Port", "number", "App", "Web UI port (restart required to take effect)"),
-
+    (
+        "TIMEZONE",
+        "Timezone",
+        "text",
+        "App",
+        "e.g. Africa/Lagos, America/New_York, Europe/London",
+    ),
+    (
+        "FLASK_PORT",
+        "Port",
+        "number",
+        "App",
+        "Web UI port (restart required to take effect)",
+    ),
     # ── Email / SMTP
-    ("SMTP_HOST",      "SMTP Host",            "text",   "Email (SMTP)",
-     "Namecheap cPanel: bonhomieinc.dev  (SSL port 465)"),
-    ("SMTP_PORT",      "SMTP Port",            "number", "Email (SMTP)",
-     "465 = SSL (recommended for Namecheap) · 587 = STARTTLS · 25 = plain"),
-    ("SMTP_USER",      "SMTP Username",        "text",   "Email (SMTP)",
-     "Your full email address: bonhomie@bonhomieinc.dev"),
-    ("SMTP_FROM",      "From Address",         "text",   "Email (SMTP)",
-     "The email address shown as sender — usually same as username"),
-    ("SMTP_TLS",       "Use STARTTLS",         "bool",   "Email (SMTP)",
-     "Port 587 only. Keep OFF for port 465 (SSL handles encryption automatically)"),
-    ("SMTP_AUTO_SEND", "Auto-Send After Pipeline", "bool", "Email (SMTP)",
-     "Automatically email each application right after docs are generated. "
-     "Only fires when an HR or application email was found for that job."),
-    ("SMTP_ATTACH_PDF",  "Attach PDF",         "bool",   "Email (SMTP)", "Attach CV.pdf + CoverLetter.pdf"),
-    ("SMTP_ATTACH_DOCX", "Attach DOCX",        "bool",   "Email (SMTP)", "Attach CV.docx + CoverLetter.docx"),
-    ("SMTP_RETRY_COUNT", "Retry Count",        "number", "Email (SMTP)",
-     "How many times to retry a failed send before giving up (0 = no retries)"),
+    (
+        "SMTP_HOST",
+        "SMTP Host",
+        "text",
+        "Email (SMTP)",
+        "Namecheap cPanel: bonhomieinc.dev  (SSL port 465)",
+    ),
+    (
+        "SMTP_PORT",
+        "SMTP Port",
+        "number",
+        "Email (SMTP)",
+        "465 = SSL (recommended for Namecheap) · 587 = STARTTLS · 25 = plain",
+    ),
+    (
+        "SMTP_USER",
+        "SMTP Username",
+        "text",
+        "Email (SMTP)",
+        "Your full email address: bonhomie@bonhomieinc.dev",
+    ),
+    (
+        "SMTP_FROM",
+        "From Address",
+        "text",
+        "Email (SMTP)",
+        "The email address shown as sender — usually same as username",
+    ),
+    (
+        "SMTP_TLS",
+        "Use STARTTLS",
+        "bool",
+        "Email (SMTP)",
+        "Port 587 only. Keep OFF for port 465 (SSL handles encryption automatically)",
+    ),
+    (
+        "SMTP_AUTO_SEND",
+        "Auto-Send After Pipeline",
+        "bool",
+        "Email (SMTP)",
+        "Automatically email each application right after docs are generated. "
+        "Only fires when an HR or application email was found for that job.",
+    ),
+    (
+        "SMTP_ATTACH_PDF",
+        "Attach PDF",
+        "bool",
+        "Email (SMTP)",
+        "Attach CV.pdf + CoverLetter.pdf",
+    ),
+    (
+        "SMTP_ATTACH_DOCX",
+        "Attach DOCX",
+        "bool",
+        "Email (SMTP)",
+        "Attach CV.docx + CoverLetter.docx",
+    ),
+    (
+        "SMTP_RETRY_COUNT",
+        "Retry Count",
+        "number",
+        "Email (SMTP)",
+        "How many times to retry a failed send before giving up (0 = no retries)",
+    ),
 ]
 
 # Password is handled separately — never shown, only updated if non-blank is submitted
@@ -117,7 +334,10 @@ SMTP_PASSWORD_KEY = "SMTP_PASSWORD"
 
 # Keys that should never be shown or edited through the UI
 HIDDEN_KEYS = {
-    "GROQ_API_KEY", "HUNTER_API_KEY", "LINKEDIN_EMAIL", "LINKEDIN_PASSWORD",
+    "GROQ_API_KEY",
+    "HUNTER_API_KEY",
+    "LINKEDIN_EMAIL",
+    "LINKEDIN_PASSWORD",
     *{f"GROQ_API_KEY_{i}" for i in range(1, 20)},
 }
 
@@ -182,6 +402,7 @@ def _write_env(updates: dict[str, str]):
     # Reload .env into os.environ and update the config singleton in place
     load_dotenv(override=True)
     from config import config
+
     config.reload()
 
 
@@ -205,7 +426,9 @@ def settings_page():
     sections: dict[str, list[tuple]] = {}
     for field in SETTINGS_FIELDS:
         key, label, ftype, section, hint = field
-        sections.setdefault(section, []).append((key, label, ftype, hint, current.get(key, "")))
+        sections.setdefault(section, []).append(
+            (key, label, ftype, hint, current.get(key, ""))
+        )
     return render_template("settings.html", sections=sections)
 
 
@@ -219,7 +442,9 @@ def settings_save():
         else:
             val = request.form.get(key, "").strip()
             if ftype == "textarea":
-                val = ", ".join(p.strip() for p in re.split(r"[\n,]+", val) if p.strip())
+                val = ", ".join(
+                    p.strip() for p in re.split(r"[\n,]+", val) if p.strip()
+                )
             updates[key] = val
 
     # Password: only write if non-blank (blank = keep existing)

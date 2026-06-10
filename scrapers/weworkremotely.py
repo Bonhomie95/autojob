@@ -7,9 +7,11 @@ from scrapers.base import BaseScraper
 logger = logging.getLogger(__name__)
 
 RSS_FEEDS = {
-    "programming": "https://weworkremotely.com/categories/remote-programming-jobs.rss",
-    "devops": "https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss",
-    "fullstack": "https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss",
+    "programming":  "https://weworkremotely.com/categories/remote-programming-jobs.rss",
+    "devops":       "https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss",
+    "fullstack":    "https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss",
+    "design":       "https://weworkremotely.com/categories/remote-design-jobs.rss",
+    "management":   "https://weworkremotely.com/categories/remote-management-finance-jobs.rss",
 }
 
 
@@ -17,14 +19,21 @@ class WeWorkRemotelyScraper(BaseScraper):
     name = "weworkremotely"
 
     def scrape(self, roles: list[str], location: str = "Remote") -> list[dict]:
-        role_words = set()
+        # Build a flat set of individual meaningful words AND full multi-word
+        # phrases so "full stack" matches "fullstack" or "full-stack".
+        role_words: set[str] = set()
+        role_phrases: list[str] = []
         for role in roles:
-            for word in role.lower().split():
+            role_lower = role.lower().strip()
+            role_phrases.append(role_lower)
+            # normalised version — remove spaces and hyphens — "full stack" → "fullstack"
+            role_phrases.append(re.sub(r"[\s\-]+", "", role_lower))
+            for word in re.split(r"[\s\-/]+", role_lower):
                 if len(word) > 3:
                     role_words.add(word)
 
-        jobs = []
-        seen = set()
+        jobs: list[dict] = []
+        seen: set[str] = set()
 
         for feed_name, feed_url in RSS_FEEDS.items():
             logger.info(f"[WWR] Fetching feed: {feed_name}")
@@ -41,47 +50,53 @@ class WeWorkRemotelyScraper(BaseScraper):
                         continue
 
                     title = self._clean(entry.get("title", ""))
-                    # WWR titles are like "Company: Job Title"
+                    # WWR titles: "Acme Corp: Senior React Engineer [Anywhere]"
                     if ": " in title:
                         company, job_title = title.split(": ", 1)
                     else:
                         company, job_title = "", title
 
-                    # Relevance filter
-                    searchable = f"{job_title} {entry.get('summary', '')}".lower()
-                    if not any(word in searchable for word in role_words):
+                    # Strip location tag like "[Anywhere]" from job title
+                    job_title_clean = re.sub(r"\s*\[[^\]]+\]$", "", job_title).strip()
+
+                    summary_html = entry.get("summary", "")
+                    searchable = f"{job_title_clean} {BeautifulSoup(summary_html, 'lxml').get_text()}".lower()
+                    # Normalise searchable text too
+                    searchable_nospace = re.sub(r"[\s\-]+", "", searchable)
+
+                    # Match on individual words OR full phrases (handles "full stack" ↔ "fullstack")
+                    matched = (
+                        any(word in searchable for word in role_words) or
+                        any(phrase in searchable for phrase in role_phrases) or
+                        any(phrase in searchable_nospace for phrase in role_phrases)
+                    )
+                    if not matched:
                         continue
 
                     seen.add(url)
-
-                    # Use RSS summary as the primary description — always available
-                    summary_html = entry.get("summary", "")
                     description = self._clean(
                         BeautifulSoup(summary_html, "lxml").get_text(separator=" ")
                     )
-
-                    # Only attempt full-page fetch if RSS summary is very short
+                    # Fetch full description only if RSS summary is very short
                     if len(description) < 200:
                         full_desc = self._fetch_description(url)
                         if full_desc:
                             description = full_desc
 
-                    # Parse location from title suffix
+                    # Location from title bracket, e.g. [USA] or [Anywhere]
                     loc_match = re.search(r"\[([^\]]+)\]", title)
                     loc = loc_match.group(1) if loc_match else "Remote"
 
-                    jobs.append(
-                        {
-                            "title": self._clean(job_title),
-                            "company": self._clean(company),
-                            "location": loc,
-                            "url": url,
-                            "description": description,
-                            "salary": "",
-                            "posted_date": entry.get("published", ""),
-                            "source": self.name,
-                        }
-                    )
+                    jobs.append({
+                        "title":       self._clean(job_title_clean),
+                        "company":     self._clean(company),
+                        "location":    loc,
+                        "url":         url,
+                        "description": description,
+                        "salary":      "",
+                        "posted_date": entry.get("published", ""),
+                        "source":      self.name,
+                    })
                 except Exception as e:
                     logger.debug(f"[WWR] Entry parse error: {e}")
 
@@ -89,12 +104,10 @@ class WeWorkRemotelyScraper(BaseScraper):
         return jobs
 
     def _fetch_description(self, url: str) -> str:
-        """Attempt to fetch full description — silently skip if blocked."""
         resp = self.get(url)
         if not resp:
             return ""
         soup = BeautifulSoup(resp.text, "lxml")
-        listing = soup.find("div", class_="listing-container")
-        if not listing:
-            listing = soup.find("section", class_="container-listing")
+        listing = soup.find("div", class_="listing-container") or \
+                  soup.find("section", class_="container-listing")
         return self._clean(listing.get_text(separator=" ") if listing else "")

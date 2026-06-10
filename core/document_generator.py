@@ -88,16 +88,33 @@ Rules:
 - Connect 2-3 specific achievements to job requirements
 - Under 400 words, professional but human tone"""
 
-EMAIL_SYSTEM = """Write a short cold job application email.
+EMAIL_SYSTEM = """Write a short cold job application email that does NOT sound AI-generated.
 Return ONLY this exact JSON — no other text, no markdown:
 {"subject": "your subject line", "body": "your email body"}
 
-Body rules (STRICT 150 word max):
-- Line 1: Who you are and the role (one sentence, no filler)
-- 2 short paragraphs: concrete achievements matching the job
-- Final line: ask for a call
-- Sign off with name, email, phone, LinkedIn using literal \\n
-- Confident, direct tone. No "excited to" or "thrilled"."""
+SUBJECT RULES:
+- Vary the format. Examples (DO NOT just copy these):
+    "Application — <Role> (<Candidate first name>)"
+    "<Role> role — quick intro"
+    "Re: <Role> at <Company>"
+- No emojis. No "Excited to apply" / "Strong fit". Plain and human.
+
+BODY RULES (110–170 words):
+- Open with the specific role and where you saw it. One sentence.
+- One paragraph naming TWO specific items from the candidate's CV
+  that map directly to the job description — projects, stacks, or
+  measurable results. Use the candidate's actual project names from
+  the CV exactly. Do not invent specifics.
+- One short paragraph: what you'd hope to do in the role / why this
+  company specifically (something concrete from the JD). Avoid
+  "passionate", "thrilled", "excited", "leverage", "robust",
+  "seamless", "synergy".
+- One closing line offering a call.
+- Sign-off with name, email, phone, LinkedIn (when present), each
+  on its own line using literal \\n.
+- Plain language. Short sentences. No em-dashes for stylistic
+  effect. No bullet points in the body. Sound like a working
+  engineer who wrote it in 5 minutes, not a polished brochure."""
 
 
 # ──────────────────────────────────────────────────────────
@@ -226,15 +243,25 @@ def _gen_cl(cv_text: str, job: dict, contact: dict) -> Optional[dict]:
 
 def _gen_email(cv_text: str, job: dict, contact: dict) -> dict:
     hr = contact.get("hr_name") or "Hiring Manager"
+    # Pull project names from .env or auto-detect — gives the model concrete
+    # specifics to reference instead of inventing them.
+    projects_block = _extract_projects_from_cv(cv_text)
+    project_names  = ", ".join(config.CANDIDATE_PROJECTS) if config.CANDIDATE_PROJECTS else ""
+
     user = (
         f"CANDIDATE: {config.CANDIDATE_NAME} | {config.CANDIDATE_EMAIL} | "
-        f"{config.CANDIDATE_PHONE} | {config.CANDIDATE_LINKEDIN}\n\n"
+        f"{config.CANDIDATE_PHONE} | {config.CANDIDATE_LINKEDIN}\n"
+        f"CANDIDATE FIRST NAME: {config.CANDIDATE_NAME.split()[0] if config.CANDIDATE_NAME else 'Candidate'}\n\n"
+        f"PROJECTS YOU MAY REFERENCE BY NAME (use exact names, pick the 1–2 most relevant):\n"
+        f"{project_names or '(none — use experience instead)'}\n\n"
+        f"PROJECT DETAILS (for context — do NOT invent specifics outside this):\n"
+        f"{projects_block[:1200] if projects_block else '(none)'}\n\n"
         f"CV HIGHLIGHTS:\n{cv_text[:800]}\n\n"
         f"ROLE: {job.get('title','')} at {job.get('company','')}\n"
         f"ADDRESS TO: {hr}\n\n"
-        f"JOB DESCRIPTION:\n{job.get('description','')[:1000]}"
+        f"JOB DESCRIPTION:\n{job.get('description','')[:1200]}"
     )
-    result = chat_json(EMAIL_SYSTEM, user, temperature=0.3, max_tokens=1000)
+    result = chat_json(EMAIL_SYSTEM, user, temperature=0.5, max_tokens=1000)
     if isinstance(result, dict) and "subject" in result and "body" in result:
         return result
     return {

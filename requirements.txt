@@ -11,3 +11,4 @@ python-dateutil>=2.8.0
 werkzeug>=3.0.0
 reportlab>=4.0.0
 docx2pdf>=0.1.8
+apscheduler>=3.10.0

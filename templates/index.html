@@ -127,6 +127,57 @@
   </div>
 </div>
 
+<!-- Analytics Charts -->
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; margin-bottom:1.5rem;" id="analytics-section">
+  <div class="card">
+    <div class="card-title">📈 Applications Sent (Last 14 Days)</div>
+    <canvas id="send-chart" height="160"></canvas>
+  </div>
+  <div class="card">
+    <div class="card-title">🗂 Jobs by Source</div>
+    <canvas id="board-chart" height="160"></canvas>
+  </div>
+</div>
+
+<!-- CV Version Manager + Scheduler Status -->
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; margin-bottom:1.5rem;">
+
+  <!-- CV Versions -->
+  <div class="card">
+    <div class="card-title">📄 CV Versions</div>
+    <div id="cv-list" style="margin-bottom:1rem; font-size:.85rem; display:flex; flex-direction:column; gap:.5rem;">
+      <div style="color:var(--text-dim);">Loading…</div>
+    </div>
+    <div style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap;">
+      <label class="btn btn-secondary" style="cursor:pointer; font-size:.8rem;">
+        ＋ Upload CV
+        <input type="file" accept=".docx,.pdf,.txt" style="display:none" onchange="uploadCVVersion(this)">
+      </label>
+      <span id="cv-upload-status" style="font-size:.8rem; color:var(--text-dim);"></span>
+    </div>
+    <div style="margin-top:.75rem; font-size:.8rem; color:var(--text-dim);">
+      Active CV is used for all pipeline runs. Switch anytime without restarting.
+    </div>
+  </div>
+
+  <!-- Scheduler + Notifications -->
+  <div class="card">
+    <div class="card-title">⏰ Auto-Schedule & Notifications</div>
+    <div id="scheduler-status" style="margin-bottom:1rem; font-size:.85rem;">
+      <div style="color:var(--text-dim);">Loading…</div>
+    </div>
+    <div style="border-top:1px solid var(--border); padding-top:1rem; margin-top:.5rem;">
+      <div class="card-title" style="margin-bottom:.5rem;">🔔 Telegram</div>
+      <button class="btn btn-secondary" style="font-size:.8rem;" onclick="testTelegram()">Send Test Notification</button>
+      <div id="telegram-status" style="font-size:.8rem; color:var(--text-dim); margin-top:.5rem;"></div>
+      <div style="font-size:.75rem; color:var(--text-dim); margin-top:.5rem;">
+        Configure in <a href="/settings" style="color:var(--accent);">Settings</a> or .env
+      </div>
+    </div>
+  </div>
+
+</div>
+
 <!-- Recent Jobs -->
 <div class="card" style="margin-bottom:1.5rem;">
   <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1rem;">
@@ -216,59 +267,137 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script>
 let evtSource = null;
+let reconnectTimer = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT = 10;
+const RECONNECT_DELAY_MS = 3000;
+
+// ── On page load: check if a run is already active and re-attach ──
+document.addEventListener('DOMContentLoaded', function () {
+  fetch('/api/status')
+    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+    .then(data => {
+      if (data.active) {
+        const btn  = document.getElementById('run-btn');
+        const wrap = document.getElementById('progress-wrap');
+        const log  = document.getElementById('progress-log');
+        btn.disabled    = true;
+        btn.textContent = '⏳ Running…';
+        wrap.style.display = 'block';
+        log.style.display  = 'block';
+        log.textContent = '🔄 Reconnected to running pipeline…\n';
+        _connectStream();
+      }
+    })
+    .catch(() => {});
+});
 
 function startRun() {
-  const btn = document.getElementById('run-btn');
-  btn.disabled = true;
-  btn.textContent = '⏳ Running…';
-
-  const log = document.getElementById('progress-log');
+  const btn  = document.getElementById('run-btn');
+  const log  = document.getElementById('progress-log');
   const wrap = document.getElementById('progress-wrap');
+  btn.disabled    = true;
+  btn.textContent = '⏳ Running…';
   log.textContent = '';
-  log.style.display = 'block';
+  log.style.display  = 'block';
   wrap.style.display = 'block';
 
-  fetch('/run', { method: 'POST' })
-    .then(r => r.json())
+  fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
+    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
     .then(data => {
       if (data.error) {
+        // Already running — just attach to the stream
+        if (data.error.includes('already in progress')) {
+          log.textContent = '🔄 Pipeline already running — attaching to log…\n';
+          _connectStream();
+          return;
+        }
         log.textContent = '❌ ' + data.error;
-        btn.disabled = false;
-        btn.textContent = '▶ Run Pipeline';
+        _resetBtn();
         return;
       }
-      startStream();
+      reconnectAttempts = 0;
+      _connectStream();
     })
     .catch(err => {
       log.textContent = '❌ ' + err;
-      btn.disabled = false;
-      btn.textContent = '▶ Run Pipeline';
+      _resetBtn();
     });
 }
 
-function startStream() {
+function _connectStream() {
+  if (evtSource) { evtSource.close(); evtSource = null; }
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+
   const log = document.getElementById('progress-log');
   evtSource = new EventSource('/stream');
-  evtSource.onmessage = function(e) {
+
+  evtSource.onopen = function () {
+    reconnectAttempts = 0;
+  };
+
+  evtSource.onmessage = function (e) {
     const data = JSON.parse(e.data);
+    if (data.ping) return;          // keepalive — ignore
     if (data.done) {
       evtSource.close();
-      document.getElementById('run-btn').disabled = false;
-      document.getElementById('run-btn').textContent = '▶ Run Pipeline';
-      log.textContent += '\n✅ Done! Refreshing…';
+      evtSource = null;
+      log.textContent += '\n✅ Done! Refreshing in 2s…';
+      log.scrollTop = log.scrollHeight;
       setTimeout(() => location.reload(), 2000);
-    } else if (data.message) {
+      return;
+    }
+    if (data.message) {
       log.textContent += data.message + '\n';
       log.scrollTop = log.scrollHeight;
     }
   };
-  evtSource.onerror = function() {
+
+  evtSource.onerror = function () {
     evtSource.close();
-    document.getElementById('run-btn').disabled = false;
-    document.getElementById('run-btn').textContent = '▶ Run Pipeline';
+    evtSource = null;
+
+    // Check if the run is genuinely still active before reconnecting
+    fetch('/api/status')
+      .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+      .then(status => {
+        if (!status.active) {
+          // Run finished while we were disconnected
+          const log = document.getElementById('progress-log');
+          log.textContent += '\n⚠ Connection lost — pipeline may have finished. Refreshing…';
+          log.scrollTop = log.scrollHeight;
+          setTimeout(() => location.reload(), 2000);
+          return;
+        }
+        // Still running — schedule a reconnect with back-off
+        if (reconnectAttempts < MAX_RECONNECT) {
+          reconnectAttempts++;
+          const delay = RECONNECT_DELAY_MS * reconnectAttempts;
+          const log = document.getElementById('progress-log');
+          log.textContent += `\n⚡ Connection dropped — reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts}/${MAX_RECONNECT})…\n`;
+          log.scrollTop = log.scrollHeight;
+          reconnectTimer = setTimeout(_connectStream, delay);
+        } else {
+          const log = document.getElementById('progress-log');
+          log.textContent += '\n❌ Could not reconnect after multiple attempts. The pipeline is still running in the background — refresh the page to check progress.';
+          log.scrollTop = log.scrollHeight;
+          _resetBtn();
+        }
+      })
+      .catch(() => {
+        // Can't even reach the server — stop trying
+        _resetBtn();
+      });
   };
+}
+
+function _resetBtn() {
+  const btn = document.getElementById('run-btn');
+  btn.disabled    = false;
+  btn.textContent = '▶ Run Pipeline';
 }
 
 function uploadCV(input) {
@@ -279,7 +408,7 @@ function uploadCV(input) {
   const fd = new FormData();
   fd.append('cv', file);
   fetch('/upload-cv', { method: 'POST', body: fd })
-    .then(r => r.json())
+    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
     .then(data => {
       if (data.error) {
         status.innerHTML = `<span style="color:var(--red)">❌ ${data.error}</span>`;
@@ -287,8 +416,183 @@ function uploadCV(input) {
         status.innerHTML = `<span style="color:var(--green)">✅ Uploaded: ${data.filename}</span>`;
         setTimeout(() => location.reload(), 1000);
       }
+    })
+    .catch(err => {
+      status.innerHTML = `<span style="color:var(--red)">❌ ${err}</span>`;
     });
 }
+
+// ── Analytics Charts ──────────────────────────────────────────
+function loadCharts() {
+  fetch('/api/analytics')
+    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+    .then(data => {
+      // Send trend chart
+      const trend = data.send_trend || [];
+      const sendCtx = document.getElementById('send-chart');
+      if (sendCtx && trend.length) {
+        new Chart(sendCtx, {
+          type: 'bar',
+          data: {
+            labels: trend.map(t => t.day ? t.day.slice(5) : ''),
+            datasets: [{
+              label: 'Sent',
+              data: trend.map(t => t.count),
+              backgroundColor: 'rgba(26,86,219,0.7)',
+              borderRadius: 4,
+            }]
+          },
+          options: {
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { ticks: { color: '#9ca3af', font: { size: 11 } }, grid: { color: '#2a2d3e' } },
+              y: { ticks: { color: '#9ca3af', font: { size: 11 } }, grid: { color: '#2a2d3e' }, beginAtZero: true }
+            }
+          }
+        });
+      } else if (sendCtx) {
+        sendCtx.parentElement.innerHTML += '<div style="color:var(--text-dim);font-size:.8rem;text-align:center;padding:2rem 0;">No emails sent yet</div>';
+      }
+
+      // Board breakdown chart
+      const boards = data.by_board || {};
+      const boardCtx = document.getElementById('board-chart');
+      if (boardCtx && Object.keys(boards).length) {
+        const colours = ['#1a56db','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#84cc16','#f97316'];
+        new Chart(boardCtx, {
+          type: 'doughnut',
+          data: {
+            labels: Object.keys(boards),
+            datasets: [{ data: Object.values(boards), backgroundColor: colours, borderWidth: 0 }]
+          },
+          options: {
+            plugins: {
+              legend: { position: 'right', labels: { color: '#e5e7eb', font: { size: 11 }, boxWidth: 12 } }
+            },
+            cutout: '60%'
+          }
+        });
+      } else if (boardCtx) {
+        boardCtx.parentElement.innerHTML += '<div style="color:var(--text-dim);font-size:.8rem;text-align:center;padding:2rem 0;">No jobs yet</div>';
+      }
+    })
+    .catch(() => {});
+}
+
+// ── CV Version Manager ─────────────────────────────────────
+function loadCVList() {
+  fetch('/api/cv/list')
+    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+    .then(data => {
+      const el = document.getElementById('cv-list');
+      if (!data.files || !data.files.length) {
+        el.innerHTML = '<div style="color:var(--text-dim);">No CV files found in input/</div>';
+        return;
+      }
+      el.innerHTML = data.files.map(f => `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:.5rem;
+                    padding:.5rem .75rem; border-radius:6px;
+                    background:${f.active ? 'rgba(26,86,219,.15)' : 'rgba(255,255,255,.03)'};
+                    border:1px solid ${f.active ? 'var(--accent)' : 'var(--border)'};">
+          <div>
+            <span style="font-weight:600;">${f.filename}</span>
+            <span style="color:var(--text-dim); margin-left:.5rem; font-size:.75rem;">${f.size_kb} KB · ${f.modified}</span>
+            ${f.active ? '<span style="margin-left:.5rem; color:var(--green); font-size:.75rem;">✓ Active</span>' : ''}
+          </div>
+          <div style="display:flex; gap:.35rem;">
+            ${!f.active ? `<button class="btn btn-secondary" style="font-size:.7rem; padding:.2rem .6rem;"
+              onclick="setCVActive('${f.filename}')">Use</button>` : ''}
+            <button class="btn btn-danger" style="font-size:.7rem; padding:.2rem .6rem;"
+              onclick="deleteCV('${f.filename}')">✕</button>
+          </div>
+        </div>
+      `).join('');
+    })
+    .catch(() => {});
+}
+
+function setCVActive(filename) {
+  fetch('/api/cv/set-active', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({filename}) })
+    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+    .then(() => loadCVList())
+    .catch(() => loadCVList());
+}
+
+function deleteCV(filename) {
+  if (!confirm(`Delete ${filename}?`)) return;
+  fetch('/api/cv/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({filename}) })
+    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+    .then(() => loadCVList())
+    .catch(() => loadCVList());
+}
+
+function uploadCVVersion(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const status = document.getElementById('cv-upload-status');
+  status.textContent = '⏳ Uploading…';
+  const fd = new FormData();
+  fd.append('cv', file);
+  fetch('/upload-cv', { method: 'POST', body: fd })
+    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+    .then(data => {
+      if (data.error) {
+        status.textContent = '❌ ' + data.error;
+      } else {
+        status.textContent = '✅ Uploaded';
+        loadCVList();
+        setTimeout(() => { status.textContent = ''; }, 3000);
+      }
+    })
+    .catch(err => {
+      status.textContent = '❌ ' + err;
+    });
+}
+
+// ── Scheduler Status ────────────────────────────────────────
+function loadSchedulerStatus() {
+  fetch('/api/scheduler/status')
+    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+    .then(data => {
+      const el = document.getElementById('scheduler-status');
+      const dot = data.enabled ? '🟢' : '⚪';
+      const nextRun = data.next_run
+        ? `<div style="margin-top:.35rem; color:var(--text-dim); font-size:.8rem;">Next run: ${data.next_run}</div>`
+        : '';
+      el.innerHTML = `
+        <div>${dot} <strong>${data.enabled ? 'Enabled' : 'Disabled'}</strong></div>
+        <div style="color:var(--text-dim); font-size:.8rem; margin-top:.25rem;">
+          Schedule: <code style="background:var(--border); padding:.1rem .35rem; border-radius:4px;">${data.cron || '—'}</code>
+        </div>
+        ${nextRun}
+        <div style="margin-top:.5rem; font-size:.75rem; color:var(--text-dim);">
+          ${data.enabled ? 'Pipeline runs automatically on schedule. ' : 'Set SCHEDULE_ENABLED=true in '}
+          <a href="/settings" style="color:var(--accent);">${data.enabled ? 'Edit in Settings →' : '.env or Settings →'}</a>
+        </div>
+      `;
+    })
+    .catch(() => {});
+}
+
+// ── Telegram Test ────────────────────────────────────────────
+function testTelegram() {
+  const status = document.getElementById('telegram-status');
+  status.textContent = '⏳ Sending…';
+  fetch('/api/notify/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
+    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+    .then(data => {
+      status.textContent = data.message;
+      status.style.color = data.success ? 'var(--green)' : 'var(--red)';
+    })
+    .catch(() => { status.textContent = '❌ Request failed'; });
+}
+
+// ── Page init ────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', function() {
+  loadCharts();
+  loadCVList();
+  loadSchedulerStatus();
+});
 
 // Drag-and-drop
 const zone = document.getElementById('upload-zone');

@@ -168,9 +168,14 @@ function updateStatus(jobId, newStatus) {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status: newStatus }),
-  }).then(() => {
+  })
+  .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+  .then(() => {
     const labels = { applied: '✉ Applied', pending: 'Pending', skipped: 'Skipped' };
     alert(`Status updated to: ${labels[newStatus] || newStatus}`);
+  })
+  .catch(err => {
+    alert('❌ Failed to update status: ' + err);
   });
 }
 
@@ -194,7 +199,7 @@ function sendEmail(jobId) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ to_email: toEmail }),
   })
-  .then(r => r.json())
+  .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
   .then(data => {
     btn.disabled = false;
     btn.textContent = '📧 Send Now';
