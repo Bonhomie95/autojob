@@ -14,7 +14,22 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 from core.groq_client import chat_json
+from core.github_client import GitHubClient
 from config import config
+
+# ──────────────────────────────────────────────────────────
+# Lazy GitHub client — instantiated once per process
+# ──────────────────────────────────────────────────────────
+_gh_client: "GitHubClient | None" = None
+
+def _get_github_client() -> "GitHubClient":
+    global _gh_client
+    if _gh_client is None:
+        _gh_client = GitHubClient(
+            token=config.GITHUB_TOKEN,
+            username=config.CANDIDATE_GITHUB,
+        )
+    return _gh_client
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +53,14 @@ CV_SYSTEM = """You are an expert CV writer and ATS optimization specialist.
 ABSOLUTE RULES — violation means the output is wrong:
 1. If "FEATURED PROJECTS FROM THIS CV" is provided in the input, you MUST use ONLY those projects — copy names EXACTLY, never rename, never invent new ones
 2. If no projects section is found, use experience bullets as highlights instead — do NOT invent project names
-3. Keep all company names and dates EXACTLY as in the base CV
+3. Keep all company names and dates EXACTLY as in the base CV — NEVER use placeholder text like "YYYY" for years; if the year is unknown use the actual year from context or omit the field
 4. Reorder projects by relevance to the job (most relevant first), max 4
 5. Weave ATS keywords naturally into bullets — do not force them awkwardly
+6. If "PROJECT URLS" are provided, set the url field to the matching URL for that project — NEVER invent URLs
+7. If "GITHUB PROJECT DETAILS" are provided, use the Description, Language, and Topics to write concrete, accurate bullets — reference real tech stack details from this data, not generic filler
+8. Experience bullets must reference specific outcomes, numbers, or technologies — never vague statements like "worked on" or "helped with"
+9. OMIT UNKNOWN FIELDS: if a value in the source CV is "Not specified", "not specified", "No details available", "N/A", "Unknown", or any similar placeholder — output an empty string "" for that field. Never copy placeholder text into the output. Applies to: company, period, title, stack, bullets, and any other field.
+10. If a project has no real bullets (only placeholders or "No details available"), output an empty bullets array [] — do not invent bullets for it.
 
 Return ONLY valid JSON, no markdown fences, no explanation:
 {
@@ -58,15 +78,16 @@ Return ONLY valid JSON, no markdown fences, no explanation:
     {
       "title": "Job Title",
       "company": "Company Name",
-      "period": "YYYY – Present",
+      "period": "2019 – Present",
       "bullets": ["achievement bullet 1", "achievement bullet 2"]
     }
   ],
   "projects": [
     {
       "name": "EXACT project name from CV — never invent",
-      "stack": "Tech stack as listed in CV",
-      "bullets": ["tailored achievement bullet 1", "tailored achievement bullet 2"]
+      "stack": "Tech stack as listed in CV or GitHub details",
+      "url": "URL from PROJECT URLS section if available, else empty string",
+      "bullets": ["concrete achievement bullet using real tech/outcomes", "tailored achievement bullet 2"]
     }
   ],
   "ats_keywords_used": ["kw1", "kw2"]
@@ -83,10 +104,12 @@ Return ONLY valid JSON:
 }
 
 Rules:
-- Address to the HR name if provided, otherwise 'Hiring Manager'
-- Reference the specific company and role
+- CRITICAL: Do NOT start any paragraph with "Dear ...", a salutation, or a greeting — the salutation is added separately
+- Address to the HR name if provided, otherwise 'Hiring Manager'  
+- Reference the specific company and role in the opening paragraph
 - Connect 2-3 specific achievements to job requirements
-- Under 400 words, professional but human tone"""
+- Under 400 words, professional but human tone
+- opening_paragraph must start with "I" or the role/company name — never with "Dear"""
 
 EMAIL_SYSTEM = """Write a short cold job application email that does NOT sound AI-generated.
 Return ONLY this exact JSON — no other text, no markdown:
@@ -218,9 +241,37 @@ def _gen_cv(cv_text: str, job: dict, score_data: dict) -> Optional[dict]:
         else "\n\n(No projects section found in CV — use experience bullets as project highlights)"
     )
 
+    github_base = (config.CANDIDATE_GITHUB or "").rstrip("/")
+
+    # ── GitHub enrichment ──────────────────────────────────────────────
+    # Build a project URL map: name → URL (explicit overrides win over GitHub API)
+    proj_url_map: dict[str, str] = {}
+    gh_context_block = ""
+    candidate_projs  = config.CANDIDATE_PROJECTS
+
+    if candidate_projs and (config.GITHUB_TOKEN or github_base):
+        gh = _get_github_client()
+        api_urls     = gh.project_url_map(candidate_projs)
+        gh_context_block = gh.project_context_block(candidate_projs)
+        # Merge: explicit CANDIDATE_PROJECT_URLS override API-fetched ones
+        proj_url_map = {**api_urls, **config.CANDIDATE_PROJECT_URLS}
+
+    # Serialise URL map for prompt injection
+    url_map_text = ""
+    if proj_url_map:
+        lines = [f"  {name}: {url}" for name, url in proj_url_map.items()]
+        url_map_text = "\n\nPROJECT URLS (use these exact URLs in the url field for matching projects):\n" + "\n".join(lines)
+
+    gh_section = ""
+    if gh_context_block:
+        gh_section = f"\n\n{gh_context_block}"
+
     user = (
         f"BASE CV:\n{cv_text[:1800]}"
-        f"{projects_section}\n\n"
+        f"{projects_section}"
+        f"{url_map_text}"
+        f"{gh_section}\n\n"
+        f"CANDIDATE GITHUB: {github_base}\n"
         f"TARGET ROLE: {job.get('title','')} at {job.get('company','')}\n"
         f"ATS KEYWORDS: {ats_kws}\n\n"
         f"JOB DESCRIPTION:\n{job.get('description','')[:1200]}"
@@ -415,53 +466,102 @@ def _bottom_rule(doc: Document, color: str, size: int = 4):
     pPr.append(pBdr)
 
 
+# Phrases that mean "no real data" — filtered out before writing to docx
+_PLACEHOLDER_PATTERNS = re.compile(
+    r"^\s*(not specified|no details available|n/?a|unknown|none|tbd|placeholder"
+    r"|not available|not provided|unspecified)\s*$",
+    re.IGNORECASE,
+)
+
+def _is_placeholder(value: str) -> bool:
+    """Return True if the value is a known placeholder that should be omitted."""
+    return not value or bool(_PLACEHOLDER_PATTERNS.match(value.strip()))
+
+
 def _exp_block(doc: Document, exp: dict):
+    title   = exp.get("title", "")
+    company = exp.get("company", "")
+    period  = exp.get("period", "")
+    bullets = [b for b in (exp.get("bullets") or []) if not _is_placeholder(b)]
+
+    # Skip the entire block if there's nothing real to show
+    if _is_placeholder(title) and not bullets:
+        return
+
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(4)
     p.paragraph_format.space_after  = Pt(2)
-    rt = p.add_run(exp.get("title", ""))
-    rt.bold = True
-    rt.font.size = Pt(10.5)  # type: ignore[attr-defined]
-    rt.font.color.rgb = DARK  # type: ignore[attr-defined]
-    if exp.get("company"):
-        rs = p.add_run(f"  ·  {exp['company']}")
+
+    if not _is_placeholder(title):
+        rt = p.add_run(title)
+        rt.bold = True
+        rt.font.size = Pt(10.5)  # type: ignore[attr-defined]
+        rt.font.color.rgb = DARK  # type: ignore[attr-defined]
+
+    if not _is_placeholder(company):
+        rs = p.add_run(f"  ·  {company}")
         rs.font.color.rgb = MID  # type: ignore[attr-defined]
         rs.bold = True
-    if exp.get("period"):
-        rd = p.add_run(f"  |  {exp['period']}")
+
+    if not _is_placeholder(period):
+        rd = p.add_run(f"  |  {period}")
         rd.font.color.rgb = GRAY  # type: ignore[attr-defined]
         rd.font.italic = True  # type: ignore[attr-defined]
         rd.font.size = Pt(9)  # type: ignore[attr-defined]
-    for bullet in (exp.get("bullets") or []):
+
+    for bullet in bullets:
         bp = doc.add_paragraph(style="List Bullet")
         bp.paragraph_format.space_after = Pt(1)
         bp.paragraph_format.left_indent = Inches(0.2)
         rb = bp.add_run(bullet)
         rb.font.color.rgb = MID  # type: ignore[attr-defined]
         rb.font.size = Pt(9.5)  # type: ignore[attr-defined]
+
     doc.add_paragraph("").paragraph_format.space_after = Pt(2)
 
 
 def _proj_block(doc: Document, proj: dict):
+    name    = proj.get("name", "")
+    stack   = proj.get("stack", "")
+    bullets = [b for b in (proj.get("bullets") or []) if not _is_placeholder(b)]
+
+    # Skip entirely if nothing real to show
+    if _is_placeholder(name):
+        return
+
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(4)
     p.paragraph_format.space_after  = Pt(2)
-    rn = p.add_run(proj.get("name", ""))
+    rn = p.add_run(name)
     rn.bold = True
     rn.font.color.rgb = DARK  # type: ignore[attr-defined]
     rn.font.size = Pt(10)  # type: ignore[attr-defined]
-    if proj.get("stack"):
-        rst = p.add_run(f"  —  {proj['stack']}")
+
+    if not _is_placeholder(stack):
+        rst = p.add_run(f"  —  {stack}")
         rst.font.color.rgb = ACCENT  # type: ignore[attr-defined]
         rst.font.italic = True  # type: ignore[attr-defined]
         rst.font.size = Pt(9)   # type: ignore[attr-defined]
-    for bullet in (proj.get("bullets") or []):
+
+    # Project URL — shown as plain text (ATS-safe) and clickable in Word
+    url = (proj.get("url") or "").strip()
+    if url and url.startswith("http"):
+        pu = doc.add_paragraph()
+        pu.paragraph_format.space_after = Pt(1)
+        pu.paragraph_format.left_indent = Inches(0.0)
+        ru = pu.add_run(url)
+        ru.font.size = Pt(8.5)  # type: ignore[attr-defined]
+        ru.font.color.rgb = RGBColor(0x1A, 0x56, 0xDB)  # type: ignore[attr-defined]
+        ru.font.underline = True  # type: ignore[attr-defined]
+
+    for bullet in bullets:
         bp = doc.add_paragraph(style="List Bullet")
         bp.paragraph_format.space_after = Pt(1)
         bp.paragraph_format.left_indent = Inches(0.2)
         rb = bp.add_run(bullet)
         rb.font.color.rgb = MID  # type: ignore[attr-defined]
         rb.font.size = Pt(9.5)  # type: ignore[attr-defined]
+
     doc.add_paragraph("").paragraph_format.space_after = Pt(2)
 
 
@@ -511,6 +611,12 @@ def _write_cl(data: dict, job: dict, contact: dict, path: str):
 
     for key in ["opening_paragraph", "body_paragraph_1", "body_paragraph_2", "closing_paragraph"]:
         text = data.get(key, "")
+        if not text:
+            continue
+        # Strip any AI-hallucinated salutation from the start of the opening paragraph
+        if key == "opening_paragraph":
+            import re as _re
+            text = _re.sub(r'(?i)^(dear [^,\n]+,?\s*)', '', text).lstrip()
         if text:
             pp = doc.add_paragraph(text)
             pp.paragraph_format.space_after = Pt(10)

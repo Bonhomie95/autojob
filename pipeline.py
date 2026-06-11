@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 from config import config
 from database import (
@@ -67,7 +68,15 @@ def _get_scrapers() -> list:
     return scrapers
 
 
-def _load_incomplete_jobs() -> tuple[list[dict], list[dict]]:
+def _load_backlog() -> dict:
+    """
+    Load all unfinished work from previous runs:
+      - pending_docs  : scored jobs that never got documents generated
+      - unsent_emails : docs generated, has an email, but email never sent
+      - failed_emails : email was attempted but failed
+      - portal_retries: portal fill failed or never attempted (has apply URL, no email sent)
+      - followup_due  : sent 6+ days ago, no reply, no follow-up yet
+    """
     with get_conn() as conn:
         pending_docs = conn.execute(
             """SELECT * FROM jobs
@@ -75,12 +84,39 @@ def _load_incomplete_jobs() -> tuple[list[dict], list[dict]]:
                ORDER BY score DESC""",
             (config.MIN_MATCH_SCORE,),
         ).fetchall()
-        failed_email = conn.execute(
+        unsent_emails = conn.execute(
+            """SELECT * FROM jobs
+               WHERE status = 'done'
+                 AND output_dir IS NOT NULL AND output_dir != ''
+                 AND email_status IN ('not_sent', 'no_contact')
+                 AND (hr_email != '' OR application_email != '')
+               ORDER BY score DESC""",
+        ).fetchall()
+        failed_emails = conn.execute(
             """SELECT * FROM jobs
                WHERE status = 'done' AND email_status = 'failed'
                ORDER BY created_at DESC""",
         ).fetchall()
-    return [dict(r) for r in pending_docs], [dict(r) for r in failed_email]
+        portal_retries = conn.execute(
+            """SELECT * FROM jobs
+               WHERE status = 'done'
+                 AND output_dir IS NOT NULL AND output_dir != ''
+                 AND portal_status IN ('pending', 'failed')
+                 AND email_status NOT IN ('sent')
+                 AND application_url IS NOT NULL AND application_url != ''
+               ORDER BY score DESC""",
+        ).fetchall()
+    from database import get_jobs_needing_follow_up
+    followup_due = get_jobs_needing_follow_up(
+        follow_up_days=int(os.getenv("FOLLOW_UP_DAYS", "6"))
+    )
+    return {
+        "pending_docs":   [dict(r) for r in pending_docs],
+        "unsent_emails":  [dict(r) for r in unsent_emails],
+        "failed_emails":  [dict(r) for r in failed_emails],
+        "portal_retries": [dict(r) for r in portal_retries],
+        "followup_due":   followup_due,
+    }
 
 
 # ──────────────────────────────────────────────────────────
@@ -95,6 +131,12 @@ def run_pipeline(progress_cb=None, cv_filename: str = "") -> dict:
 
     init_db()
     run_id = start_run()
+    # All counters initialised here so backlog phase can use them safely
+    docs_generated    = 0
+    emails_sent       = 0
+    portals_submitted = 0
+    jobs_found        = 0
+    jobs_scored       = 0
     config.reload()
 
     emit(
@@ -113,11 +155,137 @@ def run_pipeline(progress_cb=None, cv_filename: str = "") -> dict:
         finish_run(run_id, 0, 0, 0, status="failed")
         return {"error": "No CV found in input/ folder."}
 
-    # ── Resume: pick up interrupted jobs ───────────────────
-    resume_docs, resume_emails = _load_incomplete_jobs()
-    if resume_docs or resume_emails:
-        emit(f"🔄 Resuming: {len(resume_docs)} jobs need docs, "
-             f"{len(resume_emails)} failed emails to retry")
+    # ─────────────────────────────────────────────────────────
+    # Phase 1 — Clear the backlog before scraping anything new
+    # ─────────────────────────────────────────────────────────
+    backlog = _load_backlog()
+    has_backlog = any(backlog[k] for k in backlog)
+
+    if has_backlog:
+        emit(
+            f"📋 Backlog found — processing before scraping new jobs:\n"
+            f"   • {len(backlog['pending_docs'])} job(s) need documents\n"
+            f"   • {len(backlog['unsent_emails'])} unsent email(s)\n"
+            f"   • {len(backlog['failed_emails'])} failed email(s) to retry\n"
+            f"   • {len(backlog['portal_retries'])} portal fill(s) pending\n"
+            f"   • {len(backlog['followup_due'])} follow-up(s) due"
+        )
+
+    # ── Backlog Step A: Generate missing documents ────────────
+    if backlog["pending_docs"]:
+        emit(f"📄 Generating {len(backlog['pending_docs'])} missing document package(s)…")
+        for row in backlog["pending_docs"]:
+            row["_job_id"]     = row["id"]
+            row["_score_data"] = {
+                "score": row.get("score", 0), "ats_keywords": [],
+                "match_reasons": [], "gaps": [], "company_insight": "",
+            }
+            row["_contact"] = {
+                "hr_name":           row.get("hr_name", ""),
+                "hr_email":          row.get("hr_email", ""),
+                "hr_title":          row.get("hr_title", ""),
+                "application_email": row.get("application_email", ""),
+                "application_url":   row.get("application_url", ""),
+            }
+            try:
+                # Re-extract contacts if they were empty from the last run
+                contact = row["_contact"]
+                has_contact = bool(
+                    contact.get("hr_email") or contact.get("application_email") or
+                    contact.get("application_url")
+                )
+                if not has_contact:
+                    emit(f"  🔍 Re-extracting contacts for {row.get('company')}…")
+                    try:
+                        fresh = extract_contacts(row)
+                        if fresh:
+                            contact = fresh
+                            row["_contact"] = fresh
+                            update_job(
+                                row["id"],
+                                hr_name=fresh.get("hr_name", ""),
+                                hr_email=fresh.get("hr_email", ""),
+                                hr_title=fresh.get("hr_title", ""),
+                                application_email=fresh.get("application_email", ""),
+                                application_url=fresh.get("application_url", ""),
+                                contact_notes=fresh.get("contact_notes", ""),
+                            )
+                    except Exception as ce:
+                        emit(f"  ⚠ Contact re-extraction failed: {ce}")
+
+                success = generate_documents(
+                    row, cv_text, contact, row["_score_data"], str(output_dir)
+                )
+                if success:
+                    docs_generated += 1
+                    folder = str(output_dir / f"{_safe_dirname(row.get('company','Company'))}_{_safe_dirname(row.get('title','Role'))}")
+                    update_job(row["id"], status="done", output_dir=folder)
+                    row["output_dir"] = folder
+                    emit(f"  ✓ {row.get('company')} — {row.get('title')}")
+                else:
+                    emit(f"  ✗ Failed: {row.get('company')}")
+            except Exception as e:
+                emit(f"  ⚠ Error ({row.get('company')}): {e}")
+
+    # ── Backlog Step B: Send unsent emails ───────────────────
+    if backlog["unsent_emails"] and config.SMTP_AUTO_SEND:
+        emit(f"📧 Sending {len(backlog['unsent_emails'])} previously unsent email(s)…")
+        from mailer import group_jobs_by_contact, send_grouped_application
+        groups = group_jobs_by_contact(backlog["unsent_emails"])
+        for group in groups:
+            sent, _ = send_grouped_application(group, emit=emit)
+            emails_sent += sent
+
+    # ── Backlog Step C: Retry failed emails ──────────────────
+    if backlog["failed_emails"] and config.SMTP_AUTO_SEND:
+        emit(f"🔁 Retrying {len(backlog['failed_emails'])} failed email(s)…")
+        from mailer import send_application, smtp_configured
+        if smtp_configured():
+            for job in backlog["failed_emails"]:
+                to_email       = job.get("hr_email") or job.get("application_email") or ""
+                output_dir_job = job.get("output_dir", "")
+                if not to_email or not output_dir_job:
+                    continue
+                emit(f"  📧 Retry → {job.get('company')} ({to_email})")
+                ok, msg = send_application(to_email, output_dir_job)
+                if ok:
+                    update_job(job["id"], email_status="sent",
+                               email_sent_at=datetime.utcnow().isoformat(),
+                               email_error="", status="applied")
+                    emails_sent += 1
+                    emit(f"  ✅ {msg}")
+                else:
+                    update_job(job["id"], email_status="failed", email_error=msg)
+                    emit(f"  ❌ {msg}")
+
+    # ── Backlog Step D: Portal retries ───────────────────────
+    portal_enabled = str(getattr(config, "PORTAL_ENABLED", "false")).lower() == "true"
+    if backlog["portal_retries"] and portal_enabled:
+        emit(f"🌐 Retrying {len(backlog['portal_retries'])} portal fill(s)…")
+        from portal_filler import fill_portal
+        for job in backlog["portal_retries"]:
+            job_id = job.get("id", "")
+            ok, msg = fill_portal(job, emit=emit)
+            if ok:
+                update_job(job_id, portal_status="submitted",
+                           portal_submitted_at=datetime.utcnow().isoformat(),
+                           portal_error="", status="applied")
+                portals_submitted += 1
+            else:
+                update_job(job_id, portal_status="failed", portal_error=msg)
+                emit(f"  ⚠ Portal failed ({job.get('company')}): {msg}")
+
+    # ── Backlog Step E: Follow-ups due ───────────────────────
+    if backlog["followup_due"] and getattr(config, "FOLLOW_UP_ENABLED", True):
+        emit(f"📨 Sending {len(backlog['followup_due'])} overdue follow-up(s)…")
+        from follow_up_scheduler import detect_replies, send_follow_up
+        detect_replies(emit=emit)   # check for replies first so we don't follow up replied jobs
+        for job in backlog["followup_due"]:
+            if not job.get("reply_detected"):
+                send_follow_up(job, emit=emit)
+
+    if has_backlog:
+        emit("✅ Backlog cleared — now scraping for new jobs…")
 
     # ── Step 1: Scrape ──────────────────────────────────────
     emit("🔍 Scraping job boards…")
@@ -173,21 +341,7 @@ def run_pipeline(progress_cb=None, cv_filename: str = "") -> dict:
 
     jobs_scored = len(qualified)
 
-    # Add resumed pending-doc jobs
-    for row in resume_docs:
-        row["_job_id"]     = row["id"]
-        row["_score_data"] = {"score": row.get("score", 0), "ats_keywords": [],
-                              "match_reasons": [], "gaps": [], "company_insight": ""}
-        row["_contact"]    = {
-            "hr_name":          row.get("hr_name", ""),
-            "hr_email":         row.get("hr_email", ""),
-            "hr_title":         row.get("hr_title", ""),
-            "application_email":row.get("application_email", ""),
-            "application_url":  row.get("application_url", ""),
-        }
-        qualified.append(row)
-
-    emit(f"✅ Total to process: {len(qualified)} jobs")
+    emit(f"✅ New qualified jobs to process: {len(qualified)}")
 
     # ── Step 4: Extract HR Contacts ─────────────────────────
     emit("📞 Extracting HR contacts…")
@@ -220,9 +374,6 @@ def run_pipeline(progress_cb=None, cv_filename: str = "") -> dict:
 
     # ── Step 5: Generate Documents ──────────────────────────
     emit("📄 Generating documents…")
-    docs_generated = 0
-    emails_sent    = 0
-
     for job in qualified:
         try:
             contact    = job.get("_contact", {})
@@ -280,43 +431,47 @@ def run_pipeline(progress_cb=None, cv_filename: str = "") -> dict:
                 sent, skipped = send_grouped_application(group, emit=emit)
                 emails_sent += sent
 
-    # ── Resume: retry failed emails ─────────────────────────
-    if resume_emails and config.SMTP_AUTO_SEND:
-        emit(f"🔁 Retrying {len(resume_emails)} previously failed emails…")
-        from mailer import send_application, smtp_configured
-        if smtp_configured():
-            from datetime import datetime
-            for job in resume_emails:
-                to_email       = job.get("hr_email") or job.get("application_email") or ""
-                output_dir_job = job.get("output_dir", "")
-                if not to_email or not output_dir_job:
-                    continue
-                emit(f"  📧 Retry → {job.get('company')} ({to_email})")
-                ok, msg = send_application(to_email, output_dir_job)
+    # ── Step 7: Portal auto-fill (apply-URL-only jobs) ────────
+    portal_enabled = str(getattr(config, "PORTAL_ENABLED", "false")).lower() == "true"
+    if portal_enabled:
+        from database import get_jobs_for_portal
+        from portal_filler import fill_portal
+        portal_jobs = get_jobs_for_portal()
+        if portal_jobs:
+            emit(f"🌐 Portal auto-fill: {len(portal_jobs)} job(s) with apply URL but no email…")
+            for job in portal_jobs:
+                job_id = job.get("id", "")
+                ok, msg = fill_portal(job, emit=emit)
                 if ok:
-                    update_job(job["id"], email_status="sent",
-                               email_sent_at=datetime.utcnow().isoformat(),
-                               email_error="", status="applied")
-                    emails_sent += 1
-                    emit(f"  ✅ Retry success: {msg}")
+                    update_job(
+                        job_id,
+                        portal_status="submitted",
+                        portal_submitted_at=datetime.utcnow().isoformat(),
+                        portal_error="",
+                        status="applied",
+                    )
+                    portals_submitted += 1
                 else:
-                    update_job(job["id"], email_status="failed", email_error=msg)
-                    emit(f"  ❌ Retry failed: {msg}")
+                    update_job(job_id, portal_status="failed", portal_error=msg)
+                    emit(f"  ⚠ Portal failed ({job.get('company')}): {msg}")
 
     finish_run(run_id, jobs_found, jobs_scored, docs_generated, emails_sent)
     summary = f"\n🎉 Done! {docs_generated} packages generated"
     if emails_sent:
         summary += f", {emails_sent} emails sent"
-    if resume_docs or resume_emails:
-        summary += f" (including resumed jobs)"
+    if portals_submitted:
+        summary += f", {portals_submitted} portal(s) submitted"
+    if has_backlog:
+        summary += f" (backlog cleared)"
     emit(summary)
 
     result = {
-        "run_id":        run_id,
-        "jobs_found":    jobs_found,
-        "jobs_scored":   jobs_scored,
-        "docs_generated":docs_generated,
-        "emails_sent":   emails_sent,
+        "run_id":            run_id,
+        "jobs_found":        jobs_found,
+        "jobs_scored":       jobs_scored,
+        "docs_generated":    docs_generated,
+        "emails_sent":       emails_sent,
+        "portals_submitted": portals_submitted,
     }
 
     try:

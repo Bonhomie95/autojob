@@ -64,6 +64,24 @@ SETTINGS_FIELDS = [
         "e.g. github.com/yourname",
     ),
     (
+        "GITHUB_TOKEN",
+        "GitHub Token",
+        "password",
+        "Candidate Info",
+        "Personal access token (classic: read:user + repo scope). When set, AutoJob fetches your real repo "
+        "URLs, descriptions, and tech stacks to write accurate CV bullets automatically. "
+        "Create one at github.com/settings/tokens",
+    ),
+    (
+        "CANDIDATE_PROJECT_URLS",
+        "Project URLs (JSON)",
+        "textarea",
+        "Candidate Info",
+        'Optional: explicit project → URL map as JSON. These override auto-fetched GitHub URLs. '
+        'Format: {"ProjectName":"https://github.com/you/repo","AnotherProject":"https://live-demo.com"} '
+        "Leave blank to use auto-fetched GitHub URLs.",
+    ),
+    (
         "CANDIDATE_PROJECTS",
         "Project Names",
         "textarea",
@@ -282,7 +300,7 @@ SETTINGS_FIELDS = [
         "SMTP Username",
         "text",
         "Email (SMTP)",
-        "Your full email address: bonhomie@bonhomieinc.dev",
+        "Your full email address: adeyemibabatundejoseph@gmail.com",
     ),
     (
         "SMTP_FROM",
@@ -338,6 +356,7 @@ HIDDEN_KEYS = {
     "HUNTER_API_KEY",
     "LINKEDIN_EMAIL",
     "LINKEDIN_PASSWORD",
+    "GITHUB_TOKEN",
     *{f"GROQ_API_KEY_{i}" for i in range(1, 20)},
 }
 
@@ -439,6 +458,12 @@ def settings_save():
         key, _, ftype, *_ = field
         if ftype == "bool":
             updates[key] = "true" if request.form.get(key) else "false"
+        elif ftype == "password":
+            # Only write password/token fields when the user actually typed a value
+            val = request.form.get(key, "").strip()
+            if val:
+                updates[key] = val
+            # else: leave existing .env value untouched
         else:
             val = request.form.get(key, "").strip()
             if ftype == "textarea":
@@ -447,7 +472,7 @@ def settings_save():
                 )
             updates[key] = val
 
-    # Password: only write if non-blank (blank = keep existing)
+    # SMTP Password: only write if non-blank (blank = keep existing)
     pwd = request.form.get("SMTP_PASSWORD", "").strip()
     if pwd:
         updates["SMTP_PASSWORD"] = pwd
@@ -470,3 +495,48 @@ def api_settings_post():
         safe["SMTP_PASSWORD"] = str(data["SMTP_PASSWORD"])
     _write_env(safe)
     return jsonify({"status": "ok"})
+
+
+@settings_bp.route("/api/github/repos", methods=["GET"])
+def api_github_repos():
+    """
+    Fetch the candidate's GitHub repos and return a summary + suggested
+    CANDIDATE_PROJECT_URLS JSON so the user can review and save it.
+
+    Returns JSON:
+      {
+        "repos": [{name, html_url, description, language, topics}, ...],
+        "suggested_urls": {"RepoName": "https://github.com/..."},
+        "error": null | "message"
+      }
+    """
+    from core.github_client import GitHubClient
+    from config import config
+
+    token    = os.getenv("GITHUB_TOKEN", "").strip()
+    username = config.CANDIDATE_GITHUB
+
+    if not token and not username:
+        return jsonify({"repos": [], "suggested_urls": {}, "error": "No GITHUB_TOKEN or CANDIDATE_GITHUB set."})
+
+    gh    = GitHubClient(token=token, username=username)
+    repos = gh.all_repos_summary()
+
+    if not repos:
+        return jsonify({
+            "repos": [],
+            "suggested_urls": {},
+            "error": "No repos found. Check your token scope (needs read:user + repo) or GitHub URL."
+        })
+
+    # Build suggested URL map using CANDIDATE_PROJECTS names as keys
+    proj_names   = config.CANDIDATE_PROJECTS
+    url_map      = gh.project_url_map(proj_names) if proj_names else {}
+    # Also include explicit overrides already saved
+    url_map.update(config.CANDIDATE_PROJECT_URLS)
+
+    return jsonify({
+        "repos":          repos,
+        "suggested_urls": url_map,
+        "error":          None,
+    })

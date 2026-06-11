@@ -1,82 +1,158 @@
 """
 scheduler.py — Background scheduler for Job Hunter.
 
-Uses APScheduler to fire the pipeline and follow-up cycle automatically
-on the cron schedule defined in .env (SCHEDULE_CRON).
-
-This module is started once when app.py boots. It checks
-config.SCHEDULE_ENABLED on each tick so you can toggle it from
-the Settings page without restarting.
-
-Dependencies:
-  pip install apscheduler
+Fixes over previous version:
+  - Pipeline runs in its own thread — never blocks the scheduler heartbeat
+  - misfire_grace_time raised to 1 hour — late starts are retried not skipped
+  - Startup catch-up — if the scheduled time was missed while the app was
+    down (within the last 2 hours), the pipeline fires immediately on boot
+  - SCHEDULE_ENABLED checked at scheduling time, not inside the job
+  - Proper logging at every decision point so missed runs are visible
+  - Double-run guard — won't start a second pipeline if one is already running
 
 Cron examples (SCHEDULE_CRON in .env):
-  "0 8 * * 1-5"   Mon–Fri at 08:00
-  "0 9 * * *"     Every day at 09:00
-  "0 8,17 * * *"  Daily at 08:00 and 17:00
-  "*/30 * * * *"  Every 30 minutes (testing)
+  "0 8 * * 1-5"    Mon–Fri at 08:00
+  "0 9 * * *"      Every day at 09:00
+  "0 8,17 * * *"   Twice daily at 08:00 and 17:00
+  "*/30 * * * *"   Every 30 minutes (for testing)
 """
 
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-_scheduler = None
-_scheduler_lock = threading.Lock()
+_scheduler        = None
+_scheduler_lock   = threading.Lock()
+_pipeline_running = False
+_pipeline_lock    = threading.Lock()
 
+
+# ── Cron parser ───────────────────────────────────────────────
 
 def _parse_cron(expr: str) -> dict:
-    """Parse '0 8 * * 1-5' into APScheduler CronTrigger kwargs."""
     parts = expr.strip().split()
     if len(parts) != 5:
-        logger.warning(f"[Scheduler] Invalid cron expression '{expr}' — using default 08:00 Mon-Fri")
+        logger.warning(
+            f"[Scheduler] Invalid cron '{expr}' — falling back to 08:00 Mon-Fri"
+        )
         parts = ["0", "8", "*", "*", "1-5"]
-    keys = ["minute", "hour", "day", "month", "day_of_week"]
-    return dict(zip(keys, parts))
+    return dict(zip(["minute", "hour", "day", "month", "day_of_week"], parts))
 
 
-def _run_pipeline_job():
-    """Called by the scheduler on each tick."""
+# ── Pipeline runner ───────────────────────────────────────────
+
+def _run_pipeline_in_thread(reason: str = "scheduled"):
+    """
+    Fires the pipeline in a dedicated thread so the scheduler
+    heartbeat is never blocked. Includes a double-run guard.
+    """
+    global _pipeline_running
+
+    with _pipeline_lock:
+        if _pipeline_running:
+            logger.warning(
+                f"[Scheduler] Skipping {reason} run — pipeline already in progress"
+            )
+            return
+        _pipeline_running = True
+
+    logger.info(
+        f"[Scheduler] ⏰ Starting {reason} pipeline run at "
+        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+    def _run():
+        global _pipeline_running
+        try:
+            from pipeline import run_pipeline
+            from notifier import notify_run_complete, notify_run_error
+
+            result = run_pipeline()
+            notify_run_complete(result)
+            logger.info(f"[Scheduler] ✅ {reason.capitalize()} run complete — {result}")
+
+            # Follow-up cycle 5 min after pipeline finishes
+            from config import config as _cfg
+            if getattr(_cfg, "SCHEDULE_FOLLOWUP", True):
+                import time
+                logger.info("[Scheduler] Waiting 5 min before follow-up cycle…")
+                time.sleep(300)
+                try:
+                    from follow_up_scheduler import run_follow_up_cycle
+                    from notifier import notify_followup_complete
+                    summary = run_follow_up_cycle()
+                    notify_followup_complete(summary)
+                    logger.info(f"[Scheduler] ✅ Follow-up cycle complete — {summary}")
+                except Exception as e:
+                    logger.warning(f"[Scheduler] Follow-up cycle error: {e}")
+
+        except Exception as e:
+            logger.exception(f"[Scheduler] ❌ {reason.capitalize()} run failed: {e}")
+            try:
+                from notifier import notify_run_error
+                notify_run_error(str(e))
+            except Exception:
+                pass
+        finally:
+            with _pipeline_lock:
+                _pipeline_running = False
+            logger.info(f"[Scheduler] Pipeline thread exited ({reason})")
+
+    t = threading.Thread(target=_run, name=f"pipeline-{reason}", daemon=True)
+    t.start()
+
+
+def _scheduled_job():
+    """Called by APScheduler on each cron tick."""
     from config import config
     config.reload()
 
     if not config.SCHEDULE_ENABLED:
-        return  # Toggled off without restart
+        logger.info("[Scheduler] Tick fired but SCHEDULE_ENABLED=false — skipping")
+        return
 
-    logger.info(f"[Scheduler] ⏰ Scheduled pipeline run starting at {datetime.now().strftime('%H:%M')}")
+    _run_pipeline_in_thread(reason="scheduled")
 
+
+# ── Catch-up on startup ───────────────────────────────────────
+
+def _check_catchup(cron_kwargs: dict, timezone: str):
+    """
+    If the scheduled time occurred within the last 2 hours while
+    the app was offline, fire the pipeline immediately on startup.
+    """
     try:
-        from pipeline import run_pipeline
-        from notifier import notify_run_complete, notify_run_error
+        from apscheduler.triggers.cron import CronTrigger
+        from apscheduler.schedulers.background import BackgroundScheduler
+        import pytz
 
-        result = run_pipeline()
-        notify_run_complete(result)
-        logger.info(f"[Scheduler] ✅ Scheduled run complete: {result}")
+        tz       = pytz.timezone(timezone) if timezone else pytz.utc
+        now      = datetime.now(tz)
+        two_h    = now - timedelta(hours=2)
+
+        # Build a temporary trigger to find the previous fire time
+        tmp      = BackgroundScheduler(timezone=tz)
+        trigger  = CronTrigger(**cron_kwargs, timezone=tz)
+        prev     = trigger.get_next_fire_time(None, two_h)
+
+        if prev and two_h <= prev <= now:
+            logger.info(
+                f"[Scheduler] ⚡ Catch-up: scheduled time {prev.strftime('%H:%M')} "
+                f"was missed while app was down — firing now"
+            )
+            _run_pipeline_in_thread(reason="catch-up")
+        else:
+            logger.info(
+                f"[Scheduler] No missed run to catch up on "
+                f"(last scheduled: {prev.strftime('%H:%M') if prev else 'unknown'})"
+            )
     except Exception as e:
-        logger.exception(f"[Scheduler] ❌ Scheduled run failed: {e}")
-        try:
-            from notifier import notify_run_error
-            notify_run_error(str(e))
-        except Exception:
-            pass
+        logger.debug(f"[Scheduler] Catch-up check failed (non-fatal): {e}")
 
-    # Follow-up cycle runs ~5 min after the pipeline (offset to avoid overlap)
-    if getattr(__import__('config').config, 'SCHEDULE_FOLLOWUP', True):
-        import threading, time
-        def _delayed_followup():
-            time.sleep(300)
-            try:
-                from follow_up_scheduler import run_follow_up_cycle
-                from notifier import notify_followup_complete
-                summary = run_follow_up_cycle()
-                notify_followup_complete(summary)
-            except Exception as e:
-                logger.warning(f"[Scheduler] Follow-up cycle error: {e}")
-        threading.Thread(target=_delayed_followup, daemon=True).start()
 
+# ── Public API ────────────────────────────────────────────────
 
 def start_scheduler():
     """
@@ -94,30 +170,47 @@ def start_scheduler():
             from apscheduler.triggers.cron import CronTrigger
         except ImportError:
             logger.warning(
-                "[Scheduler] APScheduler not installed — scheduled runs disabled. "
-                "Run: pip install apscheduler"
+                "[Scheduler] APScheduler not installed — auto-schedule disabled.\n"
+                "  Fix: pip install apscheduler"
             )
             return
 
         from config import config
 
-        _scheduler = BackgroundScheduler(timezone=config.TIMEZONE or "UTC")
+        if not config.SCHEDULE_ENABLED:
+            logger.info(
+                "[Scheduler] SCHEDULE_ENABLED=false — scheduler not started. "
+                "Set SCHEDULE_ENABLED=true in .env to enable."
+            )
+            return
 
-        cron_kwargs = _parse_cron(config.SCHEDULE_CRON)
+        tz           = config.TIMEZONE or "UTC"
+        cron_kwargs  = _parse_cron(config.SCHEDULE_CRON)
+
+        _scheduler = BackgroundScheduler(timezone=tz)
         _scheduler.add_job(
-            _run_pipeline_job,
-            trigger=CronTrigger(**cron_kwargs),
+            _scheduled_job,
+            trigger=CronTrigger(**cron_kwargs, timezone=tz),
             id="pipeline_run",
             name="Scheduled Pipeline Run",
             replace_existing=True,
-            misfire_grace_time=300,  # Allow up to 5 min late start
+            # 1-hour grace window — if the app was slow/busy at fire time,
+            # still run the job rather than silently skipping it
+            misfire_grace_time=3600,
+            # Coalesce multiple missed fires into one
+            coalesce=True,
+            max_instances=1,
+        )
+        _scheduler.start()
+
+        next_run = get_next_run()
+        logger.info(
+            f"[Scheduler] ✅ Started — cron: '{config.SCHEDULE_CRON}' "
+            f"timezone: {tz} | next run: {next_run}"
         )
 
-        _scheduler.start()
-        logger.info(
-            f"[Scheduler] Started — cron: '{config.SCHEDULE_CRON}' "
-            f"({'enabled' if config.SCHEDULE_ENABLED else 'disabled — set SCHEDULE_ENABLED=true'})"
-        )
+        # Check for a missed run while the app was down
+        _check_catchup(cron_kwargs, tz)
 
 
 def stop_scheduler():
@@ -126,10 +219,15 @@ def stop_scheduler():
         if _scheduler:
             _scheduler.shutdown(wait=False)
             _scheduler = None
+            logger.info("[Scheduler] Stopped")
+
+
+def trigger_now():
+    """Manually fire the pipeline outside of the cron schedule."""
+    _run_pipeline_in_thread(reason="manual")
 
 
 def get_next_run() -> str | None:
-    """Return the next scheduled run time as an ISO string, or None."""
     if not _scheduler:
         return None
     job = _scheduler.get_job("pipeline_run")
@@ -141,8 +239,9 @@ def get_next_run() -> str | None:
 def scheduler_status() -> dict:
     from config import config
     return {
-        "enabled":   getattr(config, "SCHEDULE_ENABLED", False),
-        "cron":      getattr(config, "SCHEDULE_CRON", ""),
-        "next_run":  get_next_run(),
-        "running":   _scheduler is not None and _scheduler.running,
+        "enabled":          getattr(config, "SCHEDULE_ENABLED", False),
+        "cron":             getattr(config, "SCHEDULE_CRON", ""),
+        "next_run":         get_next_run(),
+        "running":          _scheduler is not None and _scheduler.running,
+        "pipeline_active":  _pipeline_running,
     }

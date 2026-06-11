@@ -29,34 +29,6 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 app.register_blueprint(settings_bp)
 
-
-# ─────────────────────────────────────────────────────────
-# JSON error handlers — prevent Flask returning HTML error
-# pages to fetch() calls that expect JSON
-# ─────────────────────────────────────────────────────────
-
-@app.errorhandler(404)
-def not_found(e):
-    return jsonify({"error": "Not found", "detail": str(e)}), 404
-
-
-@app.errorhandler(405)
-def method_not_allowed(e):
-    return jsonify({"error": "Method not allowed", "detail": str(e)}), 405
-
-
-@app.errorhandler(500)
-def internal_error(e):
-    logger.exception("Unhandled 500 error")
-    return jsonify({"error": "Internal server error", "detail": str(e)}), 500
-
-
-@app.errorhandler(Exception)
-def unhandled_exception(e):
-    logger.exception("Unhandled exception")
-    return jsonify({"error": "Unexpected error", "detail": str(e)}), 500
-
-
 # ── Global run state ──────────────────────────────────────
 _run_lock = threading.Lock()
 _run_active = False
@@ -129,7 +101,7 @@ def trigger_run():
         except queue.Empty:
             break
 
-    data = request.get_json(silent=True, force=True) or {}
+    data = request.json or {}
     cv_filename = data.get("cv_filename", "")
 
     def run_in_thread():
@@ -221,7 +193,7 @@ def api_status():
 
 @app.route("/api/job/<job_id>/status", methods=["PATCH"])
 def update_job_status(job_id):
-    data = request.get_json(silent=True, force=True) or {}
+    data = request.json or {}
     new_status = data.get("status")
     if new_status not in ("pending", "done", "skipped", "applied"):
         return jsonify({"error": "Invalid status"}), 400
@@ -243,7 +215,7 @@ def send_job_email(job_id):
     if not output_dir:
         return jsonify({"error": "No output folder — run pipeline first"}), 400
 
-    data     = request.get_json(silent=True, force=True) or {}
+    data     = request.json or {}
     to_email = data.get("to_email") or job.get("hr_email") or job.get("application_email") or ""
     subject  = data.get("subject")
     body     = data.get("body")
@@ -279,7 +251,7 @@ def test_smtp():
 @app.route("/api/smtp/send-test", methods=["POST"])
 def send_test_email():
     from mailer import send_application, smtp_configured
-    data     = request.get_json(silent=True, force=True) or {}
+    data     = request.json or {}
     to_email = (data.get("to_email") or "").strip()
 
     if not to_email:
@@ -464,7 +436,7 @@ def api_cv_list():
 @app.route("/api/cv/set-active", methods=["POST"])
 def api_cv_set_active():
     """Pin a CV file as the active version for future runs."""
-    data     = request.get_json(silent=True, force=True) or {}
+    data     = request.json or {}
     filename = data.get("filename", "").strip()
     if filename and not (Path(config.INPUT_DIR) / filename).exists():
         return jsonify({"error": f"File not found: {filename}"}), 404
@@ -476,7 +448,7 @@ def api_cv_set_active():
 
 @app.route("/api/cv/delete", methods=["POST"])
 def api_cv_delete():
-    data     = request.get_json(silent=True, force=True) or {}
+    data     = request.json or {}
     filename = data.get("filename", "").strip()
     if not filename:
         return jsonify({"error": "No filename provided"}), 400
@@ -489,6 +461,60 @@ def api_cv_delete():
         _update_env_key("ACTIVE_CV", "")
         config.reload()
     return jsonify({"status": "ok"})
+
+
+# ─────────────────────────────────────────────────────────
+# API — Portal
+# ─────────────────────────────────────────────────────────
+
+@app.route("/api/portal/status")
+def api_portal_status():
+    """Check if Playwright is installed and ready."""
+    from portal_filler import portal_available
+    available = portal_available()
+    return jsonify({
+        "available": available,
+        "enabled":   str(getattr(config, "PORTAL_ENABLED", "false")).lower() == "true",
+        "message":   "Ready" if available else (
+            "Playwright not installed. Run: pip install playwright && playwright install chromium"
+        ),
+    })
+
+
+@app.route("/api/job/<job_id>/portal-fill", methods=["POST"])
+def api_portal_fill(job_id):
+    """Manually trigger portal fill for a specific job."""
+    from portal_filler import fill_portal
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    data = request.json or {}
+    # Allow caller to override the apply URL
+    if data.get("apply_url"):
+        job["application_url"] = data["apply_url"]
+
+    ok, msg = fill_portal(job)
+    if ok:
+        update_job(
+            job_id,
+            portal_status="submitted",
+            portal_submitted_at=datetime.utcnow().isoformat(),
+            portal_error="",
+            status="applied",
+        )
+    else:
+        update_job(job_id, portal_status="failed", portal_error=msg)
+
+    return jsonify({"success": ok, "message": msg})
+
+
+@app.route("/api/portal/eligible")
+def api_portal_eligible():
+    """Jobs that have an apply URL but no email sent — portal candidates."""
+    from database import get_jobs_for_portal
+    jobs = get_jobs_for_portal()
+    return jsonify({"count": len(jobs), "jobs": jobs})
 
 
 # ─────────────────────────────────────────────────────────

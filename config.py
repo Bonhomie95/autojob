@@ -34,7 +34,33 @@ class Config:
         self.GROQ_MODEL: str = "llama-3.3-70b-versatile"
 
         # ── Optional integrations
-        self.HUNTER_API_KEY: str = os.getenv("HUNTER_API_KEY", "")
+        # Hunter.io — supports a pool of keys just like Groq.
+        # Single key:  HUNTER_API_KEY=abc123
+        # Multiple:    HUNTER_API_KEY_1=abc  HUNTER_API_KEY_2=def ...
+        self.HUNTER_API_KEYS: list[str] = self._load_hunter_keys()
+
+        # Keep single-key attr for any code that still reads it directly
+        self.HUNTER_API_KEY: str = self.HUNTER_API_KEYS[0] if self.HUNTER_API_KEYS else ""
+
+        # ── GitHub Integration
+        # Personal access token (classic or fine-grained, read:user + repo scope).
+        # When set, AutoJob fetches your real repo URLs and descriptions to
+        # inject accurate, concrete details into every CV it generates.
+        # Leave blank to skip GitHub enrichment (URLs fall back to what's in your CV PDF).
+        self.GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "").strip()
+
+        # Optional explicit project → URL overrides (JSON object in env).
+        # Format: CANDIDATE_PROJECT_URLS={"WordWar":"https://github.com/you/wordwar","VaultDrop":"https://vaultdrop.io"}
+        # When present, these URLs win over any auto-fetched GitHub URL for that project name.
+        # Useful for projects with live demo URLs or repos not on GitHub.
+        raw_urls = os.getenv("CANDIDATE_PROJECT_URLS", "").strip()
+        self.CANDIDATE_PROJECT_URLS: dict[str, str] = {}
+        if raw_urls:
+            try:
+                import json as _json
+                self.CANDIDATE_PROJECT_URLS = _json.loads(raw_urls)
+            except Exception:
+                pass  # silently ignore malformed JSON
 
         # ── Target roles & keywords
         self.TARGET_ROLES: list[str] = [
@@ -154,6 +180,20 @@ class Config:
         self.IMAP_USER: str     = os.getenv("IMAP_USER", self.SMTP_USER)
         self.IMAP_PASSWORD: str = os.getenv("IMAP_PASSWORD", self.SMTP_PASSWORD)
 
+        # ── Ollama fallback (used when all Groq keys are exhausted)
+        # Models are tried in the order listed — first available wins.
+        # Recommended order for this workload (you have all of these):
+        #   qwen2.5-coder:32b  — best for doc generation (slow but high quality)
+        #   gemma3:12b         — good for scoring + research
+        #   qwen3:6b           — fast, reliable JSON extraction
+        #   mistral            — quick fallback for any task
+        self.OLLAMA_ENABLED: bool  = os.getenv("OLLAMA_ENABLED", "false").lower() == "true"
+        self.OLLAMA_BASE_URL: str  = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        self.OLLAMA_MODELS: str    = os.getenv(
+            "OLLAMA_MODELS",
+            "qwen2.5-coder:32b,gemma3:12b,mistral:latest"
+        )
+
         # ── Scheduler (auto-run pipeline on a cron schedule)
         # SCHEDULE_CRON uses standard 5-field cron syntax. Examples:
         #   "0 8 * * 1-5"   = Mon-Fri at 08:00 local time
@@ -168,10 +208,30 @@ class Config:
         self.TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.TELEGRAM_CHAT_ID: str   = os.getenv("TELEGRAM_CHAT_ID", "")
 
+        # ── Portal auto-fill (Playwright)
+        self.PORTAL_ENABLED: bool    = os.getenv("PORTAL_ENABLED", "false").lower() == "true"
+        self.PORTAL_HEADLESS: bool   = os.getenv("PORTAL_HEADLESS", "true").lower() == "true"
+        self.PORTAL_SUBMIT: bool     = os.getenv("PORTAL_SUBMIT", "true").lower() == "true"
+        self.PORTAL_TIMEOUT_MS: int  = int(os.getenv("PORTAL_TIMEOUT_MS", "30000"))
+
         # ── CV Version Management
         # Leave blank = auto-pick first file found in input/ (original behaviour)
         # Set to a filename to pin a specific CV (e.g. CV_web3.docx)
         self.ACTIVE_CV: str = os.getenv("ACTIVE_CV", "")
+
+
+    def _load_hunter_keys(self) -> list[str]:
+        keys: list[str] = []
+        # Single key
+        k = os.getenv("HUNTER_API_KEY", "").strip()
+        if k:
+            keys.append(k)
+        # Numbered pool
+        for i in range(1, 20):
+            k = os.getenv(f"HUNTER_API_KEY_{i}", "").strip()
+            if k and k not in keys:
+                keys.append(k)
+        return keys
 
 
 config = Config()

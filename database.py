@@ -39,6 +39,9 @@ def init_db():
                 follow_up_sent_at TEXT,
                 follow_up_status  TEXT DEFAULT 'pending',
                 reply_detected    INTEGER DEFAULT 0,
+                portal_status     TEXT DEFAULT 'pending',
+                portal_submitted_at TEXT,
+                portal_error      TEXT,
                 created_at        TEXT DEFAULT (datetime('now'))
             );
 
@@ -58,12 +61,15 @@ def init_db():
         # Migrate existing DB — add columns that may not exist yet
         existing = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
         for col, defn in [
-            ("email_status",      "TEXT DEFAULT 'not_sent'"),
-            ("email_sent_at",     "TEXT"),
-            ("email_error",       "TEXT"),
-            ("follow_up_sent_at", "TEXT"),
-            ("follow_up_status",  "TEXT DEFAULT 'pending'"),
-            ("reply_detected",    "INTEGER DEFAULT 0"),
+            ("email_status",        "TEXT DEFAULT 'not_sent'"),
+            ("email_sent_at",       "TEXT"),
+            ("email_error",         "TEXT"),
+            ("follow_up_sent_at",   "TEXT"),
+            ("follow_up_status",    "TEXT DEFAULT 'pending'"),
+            ("reply_detected",      "INTEGER DEFAULT 0"),
+            ("portal_status",       "TEXT DEFAULT 'pending'"),
+            ("portal_submitted_at", "TEXT"),
+            ("portal_error",        "TEXT"),
         ]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {defn}")
@@ -233,6 +239,26 @@ def get_recent_runs(limit: int = 10) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_jobs_for_portal() -> list[dict]:
+    """
+    Jobs that have an application_url but no email was sent,
+    docs are generated, and portal hasn't been attempted yet.
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM jobs
+            WHERE status = 'done'
+              AND output_dir IS NOT NULL AND output_dir != ''
+              AND portal_status = 'pending'
+              AND email_status NOT IN ('sent')
+              AND (application_url IS NOT NULL AND application_url != '')
+            ORDER BY score DESC
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_stats() -> dict:
     with get_conn() as conn:
         total       = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
@@ -243,6 +269,9 @@ def get_stats() -> dict:
         skipped     = conn.execute("SELECT COUNT(*) FROM jobs WHERE status='skipped'").fetchone()[0]
         emails_sent = conn.execute(
             "SELECT COUNT(*) FROM jobs WHERE email_status='sent'"
+        ).fetchone()[0]
+        portal_submitted = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE portal_status='submitted'"
         ).fetchone()[0]
         replies     = conn.execute(
             "SELECT COUNT(*) FROM jobs WHERE reply_detected=1"
@@ -267,13 +296,14 @@ def get_stats() -> dict:
         send_trend = [{"day": r["day"], "count": r["cnt"]} for r in trend_rows]
 
     return {
-        "total":       total,
-        "done":        done,
-        "today":       today,
-        "skipped":     skipped,
-        "emails_sent": emails_sent,
-        "replies":     replies,
-        "follow_ups":  follow_ups,
-        "by_board":    by_board,
-        "send_trend":  send_trend,
+        "total":            total,
+        "done":             done,
+        "today":            today,
+        "skipped":          skipped,
+        "emails_sent":      emails_sent,
+        "portal_submitted": portal_submitted,
+        "replies":          replies,
+        "follow_ups":       follow_ups,
+        "by_board":         by_board,
+        "send_trend":       send_trend,
     }
