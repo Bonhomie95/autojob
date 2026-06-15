@@ -19,4 +19,5 @@ build/
 Thumbs.db
 *.log
 /input
+jobhunter.db
 dev.bonhomieinc.jobhunter.plist

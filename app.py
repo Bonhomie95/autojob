@@ -528,6 +528,63 @@ def api_notify_test():
 
 
 # ─────────────────────────────────────────────────────────
+# API Key status
+# ─────────────────────────────────────────────────────────
+
+@app.route("/api/keys/status")
+def api_keys_status():
+    """Return live status of all Groq and Hunter API keys."""
+    import time
+    from core import groq_client, contact_extractor
+
+    # ── Groq ──────────────────────────────────────────────
+    groq_client._init_pool()
+    now = time.time()
+    groq_keys = []
+    for i, entry in enumerate(groq_client._key_pool):
+        exhausted_until = entry["exhausted_until"]
+        if exhausted_until <= now:
+            status = "ok"
+            recovers_in = None
+        else:
+            status = "rate_limited"
+            recovers_in = round(exhausted_until - now)
+        groq_keys.append({
+            "index":       i + 1,
+            "key_hint":    entry["key"][:8] + "…" + entry["key"][-4:],
+            "status":      status,
+            "recovers_in": recovers_in,   # seconds, None if ok
+        })
+
+    # ── Hunter ────────────────────────────────────────────
+    all_hunter = [k for k in config.HUNTER_API_KEYS if k]
+    with contact_extractor._hunter_lock:
+        exhausted_set = set(contact_extractor._exhausted_keys)
+    hunter_keys = []
+    for i, k in enumerate(all_hunter):
+        hunter_keys.append({
+            "index":    i + 1,
+            "key_hint": k[:8] + "…" + k[-4:],
+            "status":   "exhausted" if k in exhausted_set else "ok",
+        })
+
+    return jsonify({
+        "groq": {
+            "total":        len(groq_keys),
+            "ok":           sum(1 for k in groq_keys if k["status"] == "ok"),
+            "rate_limited": sum(1 for k in groq_keys if k["status"] == "rate_limited"),
+            "keys":         groq_keys,
+        },
+        "hunter": {
+            "total":     len(hunter_keys),
+            "ok":        sum(1 for k in hunter_keys if k["status"] == "ok"),
+            "exhausted": sum(1 for k in hunter_keys if k["status"] == "exhausted"),
+            "keys":      hunter_keys,
+        },
+    })
+
+
+# ─────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────
 

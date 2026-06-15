@@ -142,6 +142,17 @@
 <!-- CV Version Manager + Scheduler Status -->
 <div style="display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; margin-bottom:1.5rem;">
 
+  <!-- Key Status -->
+  <div class="card" style="grid-column:1/-1;" id="key-status-card">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:.75rem;">
+      <div class="card-title" style="margin-bottom:0;">🔑 API Key Status</div>
+      <button onclick="refreshKeyStatus()" style="font-size:.75rem; padding:.25rem .6rem; background:var(--surface2); border:1px solid var(--border); border-radius:4px; color:var(--fg); cursor:pointer;">↻ Refresh</button>
+    </div>
+    <div id="key-status-body" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+      <div style="text-align:center; padding:1rem; color:var(--gray); font-size:.85rem;">Loading…</div>
+    </div>
+  </div>
+
   <!-- CV Versions -->
   <div class="card">
     <div class="card-title">📄 CV Versions</div>
@@ -592,7 +603,57 @@ document.addEventListener('DOMContentLoaded', function() {
   loadCharts();
   loadCVList();
   loadSchedulerStatus();
+  refreshKeyStatus();
 });
+
+// ── Key Status ───────────────────────────────────────────────
+function refreshKeyStatus() {
+  fetch('/api/keys/status')
+    .then(r => r.json())
+    .then(data => {
+      const body = document.getElementById('key-status-body');
+      body.innerHTML = renderKeyPanel('Groq', data.groq, 'rate_limited', '⏱ Recovers in') +
+                       renderKeyPanel('Hunter.io', data.hunter, 'exhausted', '🚫 Quota used up this session');
+    })
+    .catch(() => {
+      document.getElementById('key-status-body').innerHTML =
+        '<div style="color:var(--red);font-size:.85rem;">Failed to load key status.</div>';
+    });
+}
+
+function renderKeyPanel(label, group, badStatus, badLabel) {
+  const allOk  = group.keys.every(k => k.status === 'ok');
+  const badge  = allOk
+    ? `<span style="background:#1a3a1a;color:#4caf50;padding:.15rem .45rem;border-radius:4px;font-size:.72rem;font-weight:600;">ALL OK</span>`
+    : `<span style="background:#3a1a1a;color:#f44336;padding:.15rem .45rem;border-radius:4px;font-size:.72rem;font-weight:600;">${group.keys.filter(k=>k.status!=='ok').length} ISSUE${group.keys.filter(k=>k.status!=='ok').length>1?'S':''}</span>`;
+
+  const rows = group.keys.map(k => {
+    const ok  = k.status === 'ok';
+    const dot = ok ? '🟢' : '🔴';
+    let detail = '';
+    if (!ok && k.recovers_in != null) {
+      const m = Math.floor(k.recovers_in / 60), s = k.recovers_in % 60;
+      detail = `<span style="color:var(--yellow);font-size:.75rem;"> — recovers in ${m>0?m+'m ':''}${s}s</span>`;
+    } else if (!ok) {
+      detail = `<span style="color:var(--red);font-size:.75rem;"> — ${badLabel}</span>`;
+    }
+    return `<div style="display:flex;align-items:center;gap:.4rem;padding:.3rem 0;border-bottom:1px solid var(--border);font-size:.82rem;">
+      <span>${dot}</span>
+      <span style="font-family:monospace;color:var(--fg-dim);">Key #${k.index}</span>
+      <span style="font-family:monospace;font-size:.75rem;color:var(--gray);">${k.key_hint}</span>
+      ${detail}
+    </div>`;
+  }).join('');
+
+  return `<div>
+    <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem;">
+      <span style="font-weight:600;font-size:.9rem;">${label}</span>
+      ${badge}
+      <span style="font-size:.75rem;color:var(--gray);">${group.ok}/${group.total} available</span>
+    </div>
+    ${rows || '<div style="font-size:.8rem;color:var(--gray);">No keys configured</div>'}
+  </div>`;
+}
 
 // Drag-and-drop
 const zone = document.getElementById('upload-zone');

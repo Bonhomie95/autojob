@@ -270,6 +270,10 @@ def fill_portal(job: dict, emit=None) -> tuple[bool, str]:
 
     if not apply_url:
         return False, "No application URL"
+
+    # Ensure URL has a valid scheme — bare domains like "build.a.team/..." crash Playwright
+    if not apply_url.startswith(("http://", "https://")):
+        apply_url = "https://" + apply_url
     if not output_dir or not Path(output_dir).exists():
         return False, "No output directory — generate documents first"
 
