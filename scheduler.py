@@ -1,5 +1,5 @@
 """
-scheduler.py — Background scheduler for Job Hunter.
+scheduler.py — Background scheduler for Auto Job.
 
 Fixes over previous version:
   - Pipeline runs in its own thread — never blocks the scheduler heartbeat

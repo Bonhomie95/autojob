@@ -1,5 +1,5 @@
 """
-mailer.py — SMTP email sender for Job Hunter.
+mailer.py — SMTP email sender for Auto Job.
 
 Improvements in this version:
   * Follow-up emails — auto-sends a polite nudge after FOLLOW_UP_DAYS

@@ -1,4 +1,4 @@
-# 🎯 Job Hunter
+# 🎯 Auto Job
 
 > Automated job discovery, AI-powered scoring, HR contact extraction, per-company application package generation, auto-send with duplicate guard, follow-up scheduling, and reply detection — all in a clean Flask dashboard.
 
@@ -6,7 +6,7 @@
 
 ## What It Does
 
-Job Hunter runs a full pipeline on demand:
+Auto Job runs a full pipeline on demand:
 
 1. **Scrapes** 9 job boards (LinkedIn, Indeed, RemoteOK, WeWorkRemotely, Jobicy, Remotive, Arbeitnow, HackerNews, Google Jobs) for your target roles
 2. **Researches** each company with a brief AI summary — so your cover letters mention real things about the company, not just generic fit language
@@ -54,8 +54,8 @@ output/
 ### 1. Clone & install
 
 ```bash
-git clone https://github.com/yourname/job-hunter.git
-cd job-hunter
+git clone https://github.com/Bonhomie95/autojob.git
+cd autojob
 python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt

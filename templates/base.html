@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{% block title %}Job Hunter{% endblock %}</title>
+  <title>{% block title %}Auto Job{% endblock %}</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -186,7 +186,7 @@
 </head>
 <body>
   <nav>
-    <a class="nav-brand" href="/">🎯 Job Hunter</a>
+    <a class="nav-brand" href="/">🎯 Auto Job</a>
     <div class="nav-links">
       <a href="/" {% if request.path == '/' %}class="active"{% endif %}>Dashboard</a>
       <a href="/jobs" {% if request.path == '/jobs' %}class="active"{% endif %}>Jobs</a>

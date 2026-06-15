@@ -1,5 +1,5 @@
 """
-follow_up_scheduler.py — Daily follow-up engine for Job Hunter.
+follow_up_scheduler.py — Daily follow-up engine for Auto Job.
 
 Runs two tasks:
   1. Reply detection — scans your Gmail SENT folder via IMAP to check

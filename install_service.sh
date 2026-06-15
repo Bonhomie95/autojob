@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────
-#  install_service.sh — Job Hunter background service installer
+#  install_service.sh — Auto Job background service installer
 #  Supports: macOS (launchd), Linux (systemd)
 #
 #  Usage:
 #    bash install_service.sh          # install
 #    bash install_service.sh remove   # uninstall
 #
-#  After install, Job Hunter starts automatically on login/boot
+#  After install, Auto Job starts automatically on login/boot
 #  and restarts itself if it crashes.
 #  Access it at: http://localhost:9000
 # ─────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_PY="$SCRIPT_DIR/app.py"
-PLIST_ID="dev.bonhomieinc.jobhunter"
+PLIST_ID="dev.bonhomieinc.autojob"
 PLIST_SRC="$SCRIPT_DIR/$PLIST_ID.plist"
 LOGS_DIR="$SCRIPT_DIR/logs"
 
@@ -74,10 +74,10 @@ install_macos() {
   launchctl start "$PLIST_ID" 2>/dev/null || true
 
   echo ""
-  echo "✅ Job Hunter installed as a macOS LaunchAgent"
+  echo "✅ Auto Job installed as a macOS LaunchAgent"
   echo "   Starts automatically at login and after crashes"
   echo "   Dashboard:  http://localhost:9000"
-  echo "   Logs:       $LOGS_DIR/jobhunter.log"
+  echo "   Logs:       $LOGS_DIR/autojob.log"
   echo ""
   echo "   Stop:    launchctl stop $PLIST_ID"
   echo "   Start:   launchctl start $PLIST_ID"
@@ -89,7 +89,7 @@ remove_macos() {
   launchctl stop "$PLIST_ID" 2>/dev/null || true
   launchctl unload "$PLIST_DEST" 2>/dev/null || true
   rm -f "$PLIST_DEST"
-  echo "✅ Job Hunter service removed"
+  echo "✅ Auto Job service removed"
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -97,12 +97,12 @@ remove_macos() {
 # ─────────────────────────────────────────────────────────────
 install_linux() {
   SYSTEMD_DIR="$HOME/.config/systemd/user"
-  SERVICE_FILE="$SYSTEMD_DIR/jobhunter.service"
+  SERVICE_FILE="$SYSTEMD_DIR/autojob.service"
   mkdir -p "$SYSTEMD_DIR"
 
   cat > "$SERVICE_FILE" << EOF
 [Unit]
-Description=Job Hunter — automated job discovery & application
+Description=Auto Job — automated job discovery & application
 After=network-online.target
 Wants=network-online.target
 
@@ -112,8 +112,8 @@ WorkingDirectory=$SCRIPT_DIR
 ExecStart=$PYTHON $APP_PY
 Restart=always
 RestartSec=10
-StandardOutput=append:$LOGS_DIR/jobhunter.log
-StandardError=append:$LOGS_DIR/jobhunter_error.log
+StandardOutput=append:$LOGS_DIR/autojob.log
+StandardError=append:$LOGS_DIR/autojob_error.log
 Environment=PYTHONUNBUFFERED=1
 Environment=PATH=$VENV_BIN:/usr/local/bin:/usr/bin:/bin
 
@@ -122,28 +122,28 @@ WantedBy=default.target
 EOF
 
   systemctl --user daemon-reload
-  systemctl --user enable jobhunter.service
-  systemctl --user start jobhunter.service
+  systemctl --user enable autojob.service
+  systemctl --user start autojob.service
   # Enable lingering so service runs even when not logged in
   loginctl enable-linger "$USER" 2>/dev/null || true
 
   echo ""
-  echo "✅ Job Hunter installed as a systemd user service"
+  echo "✅ Auto Job installed as a systemd user service"
   echo "   Starts automatically at boot (with lingering enabled)"
   echo "   Dashboard:  http://localhost:9000"
-  echo "   Logs:       $LOGS_DIR/jobhunter.log"
+  echo "   Logs:       $LOGS_DIR/autojob.log"
   echo ""
-  echo "   Status:  systemctl --user status jobhunter"
-  echo "   Stop:    systemctl --user stop jobhunter"
+  echo "   Status:  systemctl --user status autojob"
+  echo "   Stop:    systemctl --user stop autojob"
   echo "   Remove:  bash install_service.sh remove"
 }
 
 remove_linux() {
-  systemctl --user stop jobhunter.service 2>/dev/null || true
-  systemctl --user disable jobhunter.service 2>/dev/null || true
-  rm -f "$HOME/.config/systemd/user/jobhunter.service"
+  systemctl --user stop autojob.service 2>/dev/null || true
+  systemctl --user disable autojob.service 2>/dev/null || true
+  rm -f "$HOME/.config/systemd/user/autojob.service"
   systemctl --user daemon-reload
-  echo "✅ Job Hunter service removed"
+  echo "✅ Auto Job service removed"
 }
 
 # ─────────────────────────────────────────────────────────────

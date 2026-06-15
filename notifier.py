@@ -1,5 +1,5 @@
 """
-notifier.py — Telegram push notifications for Job Hunter.
+notifier.py — Telegram push notifications for Auto Job.
 
 Setup:
   1. Message @BotFather on Telegram → /newbot → copy the token
@@ -69,7 +69,7 @@ def notify_run_complete(result: dict):
     sent   = result.get("emails_sent", 0)
 
     lines = [
-        "🎯 <b>Job Hunter — Run Complete</b>",
+        "🎯 <b>Auto Job — Run Complete</b>",
         "",
         f"📋 Jobs found:    <b>{found}</b>",
         f"✅ Qualified:     <b>{scored}</b>",
@@ -86,7 +86,7 @@ def notify_run_complete(result: dict):
 
 def notify_run_error(error: str):
     send(
-        f"❌ <b>Job Hunter — Pipeline Error</b>\n\n"
+        f"❌ <b>Auto Job — Pipeline Error</b>\n\n"
         f"<code>{error[:300]}</code>"
     )
 
@@ -99,7 +99,7 @@ def notify_followup_complete(summary: dict):
     if sent == 0 and replies == 0:
         return  # Nothing interesting to report
 
-    lines = ["📨 <b>Job Hunter — Follow-Up Cycle</b>", ""]
+    lines = ["📨 <b>Auto Job — Follow-Up Cycle</b>", ""]
     if replies:
         lines.append(f"💬 Replies detected: <b>{replies}</b>")
     if sent:
@@ -123,5 +123,5 @@ def test_notification() -> tuple[bool, str]:
     """Send a test notification. Used from Settings page."""
     if not _enabled():
         return False, "Telegram not configured — set TELEGRAM_ENABLED, BOT_TOKEN and CHAT_ID in .env"
-    ok = send("✅ <b>Job Hunter</b> — Telegram notifications are working!")
+    ok = send("✅ <b>Auto Job</b> — Telegram notifications are working!")
     return (True, "Test notification sent!") if ok else (False, "Failed to send — check your BOT_TOKEN and CHAT_ID")
