@@ -14,22 +14,15 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 from core.groq_client import chat_json
-from core.github_client import GitHubClient
+from core.cv_profile import profile_is_sendable
+from core.cv_text import extract_cv_text  # re-exported for existing callers
+from core.tailor import (
+    build_cv_data,
+    build_cover_letter,
+    build_email,
+    validate_output,
+)
 from config import config
-
-# ──────────────────────────────────────────────────────────
-# Lazy GitHub client — instantiated once per process
-# ──────────────────────────────────────────────────────────
-_gh_client: "GitHubClient | None" = None
-
-def _get_github_client() -> "GitHubClient":
-    global _gh_client
-    if _gh_client is None:
-        _gh_client = GitHubClient(
-            token=config.GITHUB_TOKEN,
-            username=config.CANDIDATE_GITHUB,
-        )
-    return _gh_client
 
 logger = logging.getLogger(__name__)
 
@@ -45,286 +38,200 @@ RULE_LIGHT = "DBEAFE"
 
 
 # ──────────────────────────────────────────────────────────
-# Groq Prompts
+# Polish prompts
+#
+# These rewrite prose that already exists and is already accurate. They are
+# not asked to supply facts, because a model asked for facts invents them —
+# which is how the previous version ended up with placeholder years and
+# renamed projects. Rewriting only what's given keeps the output tied to the
+# CV even when the model is having a bad day.
 # ──────────────────────────────────────────────────────────
 
-CV_SYSTEM = """You are an expert CV writer and ATS optimization specialist.
+_POLISH_CL_SYSTEM = """You rewrite cover letter paragraphs to read more naturally.
 
-ABSOLUTE RULES — violation means the output is wrong:
-1. If "FEATURED PROJECTS FROM THIS CV" is provided in the input, you MUST use ONLY those projects — copy names EXACTLY, never rename, never invent new ones
-2. If no projects section is found, use experience bullets as highlights instead — do NOT invent project names
-3. Keep all company names and dates EXACTLY as in the base CV — NEVER use placeholder text like "YYYY" for years; if the year is unknown use the actual year from context or omit the field
-4. Reorder projects by relevance to the job (most relevant first), max 4
-5. Weave ATS keywords naturally into bullets — do not force them awkwardly
-6. If "PROJECT URLS" are provided, set the url field to the matching URL for that project — NEVER invent URLs
-7. If "GITHUB PROJECT DETAILS" are provided, use the Description, Language, and Topics to write concrete, accurate bullets — reference real tech stack details from this data, not generic filler
-8. Experience bullets must reference specific outcomes, numbers, or technologies — never vague statements like "worked on" or "helped with"
-9. OMIT UNKNOWN FIELDS: if a value in the source CV is "Not specified", "not specified", "No details available", "N/A", "Unknown", or any similar placeholder — output an empty string "" for that field. Never copy placeholder text into the output. Applies to: company, period, title, stack, bullets, and any other field.
-10. If a project has no real bullets (only placeholders or "No details available"), output an empty bullets array [] — do not invent bullets for it.
+You will be given four paragraphs assembled from a real CV. Rewrite them so
+they flow like a person wrote them, not a template.
 
-Return ONLY valid JSON, no markdown fences, no explanation:
-{
-  "profile_summary": "3-4 sentence tailored profile",
-  "core_skills": {
-    "Frontend": ["skill1"],
-    "Mobile": [],
-    "Backend": [],
-    "Web3": [],
-    "AI / ML": [],
-    "DevOps": [],
-    "Tooling": []
-  },
-  "experience": [
-    {
-      "title": "Job Title",
-      "company": "Company Name",
-      "period": "2019 – Present",
-      "bullets": ["achievement bullet 1", "achievement bullet 2"]
-    }
-  ],
-  "projects": [
-    {
-      "name": "EXACT project name from CV — never invent",
-      "stack": "Tech stack as listed in CV or GitHub details",
-      "url": "URL from PROJECT URLS section if available, else empty string",
-      "bullets": ["concrete achievement bullet using real tech/outcomes", "tailored achievement bullet 2"]
-    }
-  ],
-  "ats_keywords_used": ["kw1", "kw2"]
-}"""
-
-CL_SYSTEM = """You are an expert cover letter writer. Must NOT sound generic.
+HARD RULES:
+- Use ONLY facts present in the input. Never add a company, technology,
+  metric, date, or achievement that is not already there.
+- Never invent numbers. If the input has no metric, the output has none.
+- Do not start any paragraph with "Dear" or any salutation.
+- Keep it under 350 words total.
+- Plain language. No "passionate", "thrilled", "excited", "leverage",
+  "robust", "seamless", "synergy".
 
 Return ONLY valid JSON:
-{
-  "opening_paragraph": "...",
-  "body_paragraph_1": "...",
-  "body_paragraph_2": "...",
-  "closing_paragraph": "..."
-}
+{"opening_paragraph":"...","body_paragraph_1":"...","body_paragraph_2":"...","closing_paragraph":"..."}"""
 
-Rules:
-- CRITICAL: Do NOT start any paragraph with "Dear ...", a salutation, or a greeting — the salutation is added separately
-- Address to the HR name if provided, otherwise 'Hiring Manager'  
-- Reference the specific company and role in the opening paragraph
-- Connect 2-3 specific achievements to job requirements
-- Under 400 words, professional but human tone
-- opening_paragraph must start with "I" or the role/company name — never with "Dear"""
+_POLISH_EMAIL_SYSTEM = """You rewrite a job application email to sound human.
 
-EMAIL_SYSTEM = """Write a short cold job application email that does NOT sound AI-generated.
-Return ONLY this exact JSON — no other text, no markdown:
-{"subject": "your subject line", "body": "your email body"}
+You will be given a subject and body assembled from a real CV. Rewrite them
+to read like a working engineer wrote it in five minutes.
 
-SUBJECT RULES:
-- Vary the format. Examples (DO NOT just copy these):
-    "Application — <Role> (<Candidate first name>)"
-    "<Role> role — quick intro"
-    "Re: <Role> at <Company>"
-- No emojis. No "Excited to apply" / "Strong fit". Plain and human.
+HARD RULES:
+- Use ONLY facts present in the input. Invent nothing — no companies, no
+  technologies, no metrics, no dates.
+- Keep the sign-off block (name, email, phone, link) exactly as given.
+- Body 110-170 words. No bullet points. No emojis.
+- Avoid "passionate", "thrilled", "excited", "leverage", "robust".
 
-BODY RULES (110–170 words):
-- Open with the specific role and where you saw it. One sentence.
-- One paragraph naming TWO specific items from the candidate's CV
-  that map directly to the job description — projects, stacks, or
-  measurable results. Use the candidate's actual project names from
-  the CV exactly. Do not invent specifics.
-- One short paragraph: what you'd hope to do in the role / why this
-  company specifically (something concrete from the JD). Avoid
-  "passionate", "thrilled", "excited", "leverage", "robust",
-  "seamless", "synergy".
-- One closing line offering a call.
-- Sign-off with name, email, phone, LinkedIn (when present), each
-  on its own line using literal \\n.
-- Plain language. Short sentences. No em-dashes for stylistic
-  effect. No bullet points in the body. Sound like a working
-  engineer who wrote it in 5 minutes, not a polished brochure."""
+Return ONLY valid JSON:
+{"subject":"...","body":"..."}"""
 
 
 # ──────────────────────────────────────────────────────────
 # Main Entry
 # ──────────────────────────────────────────────────────────
 
-def generate_documents(job: dict, cv_text: str, contact: dict, score_data: dict, output_dir: str) -> bool:
+def _polish_threshold() -> int:
+    """
+    Score at or above which a job earns an LLM polish pass. Set
+    LLM_POLISH_MIN_SCORE=101 to disable polishing entirely and run fully
+    offline.
+    """
+    try:
+        return int(getattr(config, "LLM_POLISH_MIN_SCORE", 85))
+    except (TypeError, ValueError):
+        return 85
+
+
+def generate_documents(job: dict, profile: dict, contact: dict,
+                       score_data: dict, output_dir: str) -> tuple[bool, str]:
+    """
+    Build the application package for one job.
+
+    Content is assembled offline from the parsed CV profile. Only jobs
+    scoring at or above LLM_POLISH_MIN_SCORE get an LLM pass, and that pass
+    rewrites prose the deterministic path already produced — so a failed or
+    rate-limited call costs nothing but polish.
+
+    Returns (success, message).
+    """
     company = _safe_dirname(job.get("company", "Company"))
     role    = _safe_dirname(job.get("title", "Role"))
     folder  = Path(output_dir) / f"{company}_{role}"
+
+    ok, blockers = profile_is_sendable(profile)
+    if not ok:
+        msg = f"CV profile is not usable: {'; '.join(blockers)}"
+        logger.error(f"[DocGen] Refusing to generate for {company} — {msg}")
+        return False, msg
+
+    # ── Offline assembly — no API calls ──────────────────────
+    cv_data    = build_cv_data(profile, job, score_data)
+    cl_data    = build_cover_letter(profile, job, contact, score_data)
+    email_data = build_email(profile, job, contact, score_data)
+
+    # ── Optional polish for jobs worth the tokens ────────────
+    score = int(score_data.get("score", 0) or 0)
+    threshold = _polish_threshold()
+    if score >= threshold:
+        logger.info(f"[DocGen] {company}: score {score} ≥ {threshold} — polishing")
+        cl_data    = _polish_cover_letter(cl_data, profile, job, contact) or cl_data
+        email_data = _polish_email(email_data, profile, job, contact) or email_data
+    else:
+        logger.debug(f"[DocGen] {company}: score {score} < {threshold} — offline only")
+
+    # ── Last line of defence before anything reaches an inbox ─
+    problems = validate_output(cv_data, cl_data, email_data)
+    if problems:
+        msg = f"generated content failed validation: {'; '.join(problems[:3])}"
+        logger.error(f"[DocGen] Refusing to write {company} — {msg}")
+        return False, msg
+
     folder.mkdir(parents=True, exist_ok=True)
-
-    logger.info(f"[DocGen] Generating docs for {company} — {role}")
-
-    cv_data = _gen_cv(cv_text, job, score_data)
-    if not cv_data:
-        logger.warning("[DocGen] No CV data from Groq, skipping")
-        return False
-
-    cl_data = _gen_cl(cv_text, job, contact)
-    if not cl_data:
-        logger.warning("[DocGen] No cover letter data from Groq, skipping")
-        return False
-
-    email_data = _gen_email(cv_text, job, contact)
-
     cv_docx = folder / "CV.docx"
     cl_docx = folder / "CoverLetter.docx"
 
     _write_cv(cv_data, str(cv_docx))
-    _write_cl(cl_data, job, contact, str(cl_docx))
+    _write_cl(cl_data, job, contact, str(cl_docx), cv_data.get("identity"))
     _write_email(email_data, job, contact, score_data, folder)
 
     _to_pdf(str(cv_docx), str(folder))
     _to_pdf(str(cl_docx), str(folder))
 
     logger.info(f"[DocGen] Done → {folder}")
+    return True, str(folder)
+
+
+# ──────────────────────────────────────────────────────────
+# Polish passes — high-scoring jobs only
+# ──────────────────────────────────────────────────────────
+
+def _fact_guard(original: str, rewritten: str) -> bool:
+    """
+    Reject a rewrite that introduces numbers the original didn't have.
+
+    A polish pass is only allowed to change wording. New digits mean the
+    model invented a metric or a date, which is the exact failure that put
+    "YYYY" and fabricated achievements into the old generated CVs.
+    """
+    original_nums = set(re.findall(r"\d+", original))
+    new_nums = set(re.findall(r"\d+", rewritten))
+    invented = new_nums - original_nums
+    if invented:
+        logger.warning(
+            f"[Polish] Rejected rewrite — invented numbers: {sorted(invented)[:5]}"
+        )
+        return False
     return True
 
 
-# ──────────────────────────────────────────────────────────
-# Groq generators
-# ──────────────────────────────────────────────────────────
-
-def _extract_projects_from_cv(cv_text: str) -> str:
-    """
-    Extract FEATURED PROJECTS from CV text.
-    Priority:
-      1. CANDIDATE_PROJECTS in .env (explicit override — most reliable)
-      2. Auto-detect FEATURED PROJECTS / PROJECTS section in cv_text
-      3. Fallback: find numbered items like "1. PulseQuiz"
-    Returns a string injected into the Groq prompt so it always
-    has the full project list regardless of cv_text truncation.
-    """
-    # ── 1. env override takes priority
-    if config.CANDIDATE_PROJECTS:
-        found: list[str] = []
-        for name in config.CANDIDATE_PROJECTS:
-            # Try to find the project block in cv_text
-            pattern = rf"(?:^|\n)([^\n]*{re.escape(name)}[^\n]*(?:\n(?!\d+[.)]\s|\n).+){{0,8}})"
-            m = re.search(pattern, cv_text, re.IGNORECASE)
-            found.append(m.group(0).strip() if m else f"- {name}")
-        return "\n\n".join(found)
-
-    # ── 2. Find projects section heading
-    section_patterns = [
-        r"FEATURED PROJECTS(.*?)(?=EDUCATION|CERTIFICATIONS|REFERENCES|$)",
-        r"PROJECTS(.*?)(?=EDUCATION|CERTIFICATIONS|REFERENCES|$)",
-        r"KEY PROJECTS(.*?)(?=EDUCATION|CERTIFICATIONS|REFERENCES|$)",
-    ]
-    for pat in section_patterns:
-        m = re.search(pat, cv_text, re.IGNORECASE | re.DOTALL)
-        if m:
-            raw = m.group(1).strip()
-            if len(raw) > 50:
-                return raw[:3000]
-
-    # ── 3. Fallback: numbered items
-    project_lines: list[str] = []
-    capturing = False
-    for line in cv_text.split("\n"):
-        s = line.strip()
-        if re.match(r"^[1-9][.)]\s+\w", s):
-            capturing = True
-        if capturing:
-            project_lines.append(s)
-            if len(project_lines) > 80:
-                break
-
-    return "\n".join(project_lines) if project_lines else ""
-
-
-def _gen_cv(cv_text: str, job: dict, score_data: dict) -> Optional[dict]:
-    ats_kws = ", ".join(score_data.get("ats_keywords", []))
-
-    # Pre-extract projects so they survive cv_text truncation
-    projects_block = _extract_projects_from_cv(cv_text)
-    projects_section = (
-        f"\n\nFEATURED PROJECTS FROM THIS CV (you MUST use ONLY these — exact names):\n{projects_block}"
-        if projects_block
-        else "\n\n(No projects section found in CV — use experience bullets as project highlights)"
-    )
-
-    github_base = (config.CANDIDATE_GITHUB or "").rstrip("/")
-
-    # ── GitHub enrichment ──────────────────────────────────────────────
-    # Build a project URL map: name → URL (explicit overrides win over GitHub API)
-    proj_url_map: dict[str, str] = {}
-    gh_context_block = ""
-    candidate_projs  = config.CANDIDATE_PROJECTS
-
-    if candidate_projs and (config.GITHUB_TOKEN or github_base):
-        gh = _get_github_client()
-        api_urls     = gh.project_url_map(candidate_projs)
-        gh_context_block = gh.project_context_block(candidate_projs)
-        # Merge: explicit CANDIDATE_PROJECT_URLS override API-fetched ones
-        proj_url_map = {**api_urls, **config.CANDIDATE_PROJECT_URLS}
-
-    # Serialise URL map for prompt injection
-    url_map_text = ""
-    if proj_url_map:
-        lines = [f"  {name}: {url}" for name, url in proj_url_map.items()]
-        url_map_text = "\n\nPROJECT URLS (use these exact URLs in the url field for matching projects):\n" + "\n".join(lines)
-
-    gh_section = ""
-    if gh_context_block:
-        gh_section = f"\n\n{gh_context_block}"
+def _polish_cover_letter(cl_data: dict, profile: dict, job: dict,
+                         contact: dict) -> Optional[dict]:
+    keys = ["opening_paragraph", "body_paragraph_1",
+            "body_paragraph_2", "closing_paragraph"]
+    original = "\n\n".join(cl_data.get(k, "") for k in keys)
 
     user = (
-        f"BASE CV:\n{cv_text[:1800]}"
-        f"{projects_section}"
-        f"{url_map_text}"
-        f"{gh_section}\n\n"
-        f"CANDIDATE GITHUB: {github_base}\n"
-        f"TARGET ROLE: {job.get('title','')} at {job.get('company','')}\n"
-        f"ATS KEYWORDS: {ats_kws}\n\n"
-        f"JOB DESCRIPTION:\n{job.get('description','')[:1200]}"
+        f"ROLE: {job.get('title', '')} at {job.get('company', '')}\n"
+        f"ADDRESS TO: {contact.get('hr_name') or 'Hiring Manager'}\n\n"
+        f"PARAGRAPHS TO REWRITE:\n{original}"
     )
-    result = chat_json(CV_SYSTEM, user, temperature=0.3, max_tokens=2000)
-    return result if isinstance(result, dict) else None
+    result = chat_json(_POLISH_CL_SYSTEM, user, temperature=0.4, max_tokens=700)
+    if not isinstance(result, dict):
+        return None
+    if not all(result.get(k) for k in ("opening_paragraph", "closing_paragraph")):
+        return None
+
+    rewritten = "\n\n".join(result.get(k, "") for k in keys)
+    if not _fact_guard(original, rewritten):
+        return None
+
+    # Strip any salutation the model added back in despite the instruction.
+    result["opening_paragraph"] = re.sub(
+        r"(?i)^\s*dear[^,\n]*,?\s*", "", result.get("opening_paragraph", "")
+    ).lstrip()
+    return {k: result.get(k, cl_data.get(k, "")) for k in keys}
 
 
-def _gen_cl(cv_text: str, job: dict, contact: dict) -> Optional[dict]:
-    hr = contact.get("hr_name") or "Hiring Manager"
+def _polish_email(email_data: dict, profile: dict, job: dict,
+                  contact: dict) -> Optional[dict]:
+    original = f"{email_data.get('subject', '')}\n\n{email_data.get('body', '')}"
     user = (
-        f"CANDIDATE CV:\n{cv_text[:1200]}\n\n"
-        f"ROLE: {job.get('title','')} at {job.get('company','')}\n"
-        f"ADDRESS TO: {hr}\n\n"
-        f"JOB DESCRIPTION:\n{job.get('description','')[:1500]}"
+        f"ROLE: {job.get('title', '')} at {job.get('company', '')}\n"
+        f"ADDRESS TO: {contact.get('hr_name') or 'Hiring Manager'}\n\n"
+        f"SUBJECT: {email_data.get('subject', '')}\n\n"
+        f"BODY:\n{email_data.get('body', '')}"
     )
-    result = chat_json(CL_SYSTEM, user, temperature=0.4, max_tokens=800)
-    return result if isinstance(result, dict) else None
+    result = chat_json(_POLISH_EMAIL_SYSTEM, user, temperature=0.5, max_tokens=700)
+    if not isinstance(result, dict):
+        return None
+    if not (result.get("subject") and result.get("body")):
+        return None
 
+    body = result["body"].replace("\\n", "\n")
+    if not _fact_guard(original, f"{result['subject']}\n\n{body}"):
+        return None
 
-def _gen_email(cv_text: str, job: dict, contact: dict) -> dict:
-    hr = contact.get("hr_name") or "Hiring Manager"
-    # Pull project names from .env or auto-detect — gives the model concrete
-    # specifics to reference instead of inventing them.
-    projects_block = _extract_projects_from_cv(cv_text)
-    project_names  = ", ".join(config.CANDIDATE_PROJECTS) if config.CANDIDATE_PROJECTS else ""
+    # The contact block is the candidate's real details — never let a rewrite
+    # drop or mangle them.
+    if profile.get("email") and profile["email"] not in body:
+        logger.warning("[Polish] Rewrite dropped the contact block — keeping original")
+        return None
 
-    user = (
-        f"CANDIDATE: {config.CANDIDATE_NAME} | {config.CANDIDATE_EMAIL} | "
-        f"{config.CANDIDATE_PHONE} | {config.CANDIDATE_LINKEDIN}\n"
-        f"CANDIDATE FIRST NAME: {config.CANDIDATE_NAME.split()[0] if config.CANDIDATE_NAME else 'Candidate'}\n\n"
-        f"PROJECTS YOU MAY REFERENCE BY NAME (use exact names, pick the 1–2 most relevant):\n"
-        f"{project_names or '(none — use experience instead)'}\n\n"
-        f"PROJECT DETAILS (for context — do NOT invent specifics outside this):\n"
-        f"{projects_block[:1200] if projects_block else '(none)'}\n\n"
-        f"CV HIGHLIGHTS:\n{cv_text[:800]}\n\n"
-        f"ROLE: {job.get('title','')} at {job.get('company','')}\n"
-        f"ADDRESS TO: {hr}\n\n"
-        f"JOB DESCRIPTION:\n{job.get('description','')[:1200]}"
-    )
-    result = chat_json(EMAIL_SYSTEM, user, temperature=0.5, max_tokens=1000)
-    if isinstance(result, dict) and "subject" in result and "body" in result:
-        return result
-    return {
-        "subject": f"Application: {job.get('title','Role')} — {config.CANDIDATE_NAME}",
-        "body": (
-            f"Hi {hr},\n\nI'm a Full-Stack Engineer with 5+ years experience applying for "
-            f"the {job.get('title','')} role at {job.get('company','')}.\n\n"
-            f"My CV is attached. Happy to jump on a call.\n\n"
-            f"Best,\n{config.CANDIDATE_NAME}\n{config.CANDIDATE_EMAIL}\n"
-            f"{config.CANDIDATE_PHONE}\n{config.CANDIDATE_LINKEDIN}"
-        ),
-    }
+    return {"subject": result["subject"], "body": body}
 
 
 # ──────────────────────────────────────────────────────────
@@ -343,7 +250,7 @@ def _write_cv(data: dict, path: str):
     normal.font.name = "Calibri"  # type: ignore[attr-defined]
     normal.font.size = Pt(10)     # type: ignore[attr-defined]
 
-    _cv_header(doc)
+    _cv_header(doc, data)
 
     _heading(doc, "PROFILE")
     p = doc.add_paragraph(data.get("profile_summary", ""))
@@ -373,8 +280,19 @@ def _write_cv(data: dict, path: str):
     for proj in (data.get("projects") or [])[:4]:
         _proj_block(doc, proj)
 
+    certs = data.get("certifications") or []
+    if certs:
+        _heading(doc, "CERTIFICATIONS")
+        for cert in certs:
+            p = doc.add_paragraph(style="List Bullet")
+            p.paragraph_format.space_after = Pt(1)
+            p.paragraph_format.left_indent = Inches(0.2)
+            r = p.add_run(cert)
+            r.font.color.rgb = MID  # type: ignore[attr-defined]
+            r.font.size = Pt(9.5)   # type: ignore[attr-defined]
+
     _heading(doc, "EDUCATION")
-    for edu in _get_education():
+    for edu in (data.get("education") or []):
         p = doc.add_paragraph()
         r1 = p.add_run(edu.get("degree", ""))
         r1.bold = True
@@ -393,28 +311,32 @@ def _write_cv(data: dict, path: str):
     logger.info(f"[DocGen] CV saved → {path}")
 
 
-def _cv_header(doc: Document):
+def _cv_header(doc: Document, data: dict):
+    identity = data.get("identity") or {}
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = p.add_run(config.CANDIDATE_NAME.upper())
+    r = p.add_run((identity.get("name") or "").upper())
     r.bold = True
     r.font.size = Pt(22)  # type: ignore[attr-defined]
     r.font.color.rgb = DARK  # type: ignore[attr-defined]
     p.paragraph_format.space_before = Pt(0)
     p.paragraph_format.space_after  = Pt(3)
 
-    roles_str = "  ·  ".join(config.TARGET_ROLES[:3]) if config.TARGET_ROLES else "Full-Stack Engineer"
-    pt = doc.add_paragraph(roles_str)
-    pt.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    pt.runs[0].bold = True
-    pt.runs[0].font.size = Pt(10)  # type: ignore[attr-defined]
-    pt.runs[0].font.color.rgb = ACCENT  # type: ignore[attr-defined]
-    pt.paragraph_format.space_after = Pt(4)
+    # Titles come from roles actually held, not from a hand-set target list.
+    roles = identity.get("titles") or []
+    roles_str = "  ·  ".join(roles[:3])
+    if roles_str:
+        pt = doc.add_paragraph(roles_str)
+        pt.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        pt.runs[0].bold = True
+        pt.runs[0].font.size = Pt(10)  # type: ignore[attr-defined]
+        pt.runs[0].font.color.rgb = ACCENT  # type: ignore[attr-defined]
+        pt.paragraph_format.space_after = Pt(4)
 
     contacts = [c for c in [
-        config.CANDIDATE_PHONE, config.CANDIDATE_EMAIL,
-        config.CANDIDATE_LINKEDIN, config.CANDIDATE_GITHUB,
-        config.CANDIDATE_LOCATION,
+        identity.get("phone"), identity.get("email"),
+        identity.get("linkedin"), identity.get("github"),
+        identity.get("location"),
     ] if c]
     pc = doc.add_paragraph("  ·  ".join(contacts))
     pc.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -569,7 +491,9 @@ def _proj_block(doc: Document, proj: dict):
 # Cover Letter DOCX
 # ──────────────────────────────────────────────────────────
 
-def _write_cl(data: dict, job: dict, contact: dict, path: str):
+def _write_cl(data: dict, job: dict, contact: dict, path: str,
+               identity: dict | None = None):
+    identity = identity or {}
     doc = Document()
     for sec in doc.sections:
         sec.top_margin    = Cm(2.5)
@@ -583,13 +507,14 @@ def _write_cl(data: dict, job: dict, contact: dict, path: str):
 
     # Header
     ph = doc.add_paragraph()
-    rh = ph.add_run(config.CANDIDATE_NAME.upper())
+    rh = ph.add_run((identity.get("name") or "").upper())
     rh.bold = True
     rh.font.size = Pt(16)  # type: ignore[attr-defined]
     rh.font.color.rgb = ACCENT  # type: ignore[attr-defined]
     ph.paragraph_format.space_after = Pt(2)
 
-    contacts = [c for c in [config.CANDIDATE_EMAIL, config.CANDIDATE_PHONE, config.CANDIDATE_LINKEDIN] if c]
+    contacts = [c for c in [identity.get("email"), identity.get("phone"),
+                            identity.get("linkedin")] if c]
     pc = doc.add_paragraph("  |  ".join(contacts))
     pc.runs[0].font.size = Pt(9)  # type: ignore[attr-defined]
     pc.runs[0].font.color.rgb = GRAY  # type: ignore[attr-defined]
@@ -622,10 +547,11 @@ def _write_cl(data: dict, job: dict, contact: dict, path: str):
             pp.paragraph_format.space_after = Pt(10)
 
     doc.add_paragraph("Sincerely,").paragraph_format.space_after = Pt(20)
-    ps = doc.add_paragraph(config.CANDIDATE_NAME)
+    ps = doc.add_paragraph(identity.get("name", ""))
     ps.runs[0].bold = True
     ps.runs[0].font.color.rgb = DARK  # type: ignore[attr-defined]
-    for line in [config.CANDIDATE_EMAIL, config.CANDIDATE_PHONE, config.CANDIDATE_LINKEDIN]:
+    for line in [identity.get("email"), identity.get("phone"),
+                 identity.get("linkedin")]:
         if line:
             pl = doc.add_paragraph(line)
             pl.paragraph_format.space_after = Pt(0)
@@ -633,44 +559,6 @@ def _write_cl(data: dict, job: dict, contact: dict, path: str):
 
     doc.save(path)
     logger.info(f"[DocGen] Cover letter saved → {path}")
-
-
-# ──────────────────────────────────────────────────────────
-# Education from .env
-# ──────────────────────────────────────────────────────────
-
-def _get_education() -> list[dict]:
-    """
-    Supports multiple education entries via .env:
-      CANDIDATE_EDUCATION_1=BSc Computer Science | Lagos State University | 2018 - 2023
-      CANDIDATE_EDUCATION_2=AWS Certified Solutions Architect | Amazon | 2022
-    Also supports legacy single entry:
-      CANDIDATE_DEGREE + CANDIDATE_SCHOOL + CANDIDATE_GRAD_YEAR
-    """
-    entries: list[dict] = []
-    for i in range(1, 10):
-        raw = os.getenv(f"CANDIDATE_EDUCATION_{i}", "").strip()
-        if not raw:
-            break
-        parts = [p.strip() for p in raw.split("|")]
-        entries.append({
-            "degree": parts[0] if parts else raw,
-            "school": parts[1] if len(parts) > 1 else "",
-            "year":   parts[2] if len(parts) > 2 else "",
-        })
-    if not entries:
-        d = os.getenv("CANDIDATE_DEGREE", "").strip()
-        s = os.getenv("CANDIDATE_SCHOOL", "").strip()
-        y = os.getenv("CANDIDATE_GRAD_YEAR", "").strip()
-        if d or s:
-            entries.append({"degree": d, "school": s, "year": y})
-    if not entries:
-        entries.append({
-            "degree": "BSc, Computer Science",
-            "school": "Lagos State University, Lagos, Nigeria",
-            "year":   "2018 – 2023",
-        })
-    return entries
 
 
 # ──────────────────────────────────────────────────────────
@@ -685,7 +573,7 @@ def _write_email(email_data: dict, job: dict, contact: dict, score_data: dict, f
     )
     hr_name  = contact.get("hr_name", "") or "Not found"
     hr_title = contact.get("hr_title", "") or ""
-    subject  = email_data.get("subject", f"Application: {job.get('title','')} — {config.CANDIDATE_NAME}")
+    subject  = email_data.get("subject") or f"Application: {job.get('title','')}"
     body     = email_data.get("body", "").replace("\\n", "\n")
     sep      = "─" * 60
 
@@ -819,31 +707,6 @@ def _to_pdf_reportlab(docx_path: str, out_dir: str):
         logger.info(f"[PDF] ReportLab → {pdf_path}")
     except Exception as e:
         logger.error(f"[PDF] All methods failed: {e}")
-
-
-# ──────────────────────────────────────────────────────────
-# CV Text Extraction
-# ──────────────────────────────────────────────────────────
-
-def extract_cv_text(cv_path: str) -> str:
-    ext = Path(cv_path).suffix.lower()
-    try:
-        if ext == ".docx":
-            return "\n".join(p.text for p in Document(cv_path).paragraphs if p.text.strip())
-        elif ext == ".pdf":
-            import pdfplumber  # type: ignore
-            parts: list[str] = []
-            with pdfplumber.open(cv_path) as pdf:
-                for page in pdf.pages:
-                    t = page.extract_text()
-                    if t:
-                        parts.append(t)
-            return "\n".join(parts)
-        else:
-            return Path(cv_path).read_text(encoding="utf-8", errors="ignore")
-    except Exception as e:
-        logger.error(f"[CV] Extraction failed: {e}")
-        return ""
 
 
 # ──────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@
 follow_up_scheduler.py — Daily follow-up engine for Auto Job.
 
 Runs two tasks:
-  1. Reply detection — scans your Gmail SENT folder via IMAP to check
+  1. Reply detection — scans your configured mailbox via IMAP to check
      whether any application thread has received a reply. If detected,
      marks the job reply_detected=1 so no follow-up is sent.
 
@@ -21,10 +21,10 @@ Usage:
 Environment variables (all optional — feature degrades gracefully):
   FOLLOW_UP_DAYS    Days after first send before follow-up fires (default 6)
   FOLLOW_UP_ENABLED true/false (default true)
-  IMAP_HOST         IMAP server for reply detection (default: imap.gmail.com)
+  IMAP_HOST         IMAP server for reply detection
   IMAP_PORT         IMAP port (default: 993)
   IMAP_USER         Usually same as SMTP_USER
-  IMAP_PASSWORD     Usually same as SMTP_PASSWORD / Gmail App Password
+  IMAP_PASSWORD     IMAP password or app password for that mailbox
 """
 
 import imaplib
@@ -91,7 +91,7 @@ def detect_replies(emit=None) -> int:
         log("  ℹ️  IMAP not configured — skipping reply detection")
         return 0
 
-    imap_host = getattr(config, "IMAP_HOST", "imap.gmail.com")
+    imap_host = getattr(config, "IMAP_HOST", "")
     imap_port = int(getattr(config, "IMAP_PORT", 993))
     imap_user = getattr(config, "IMAP_USER", config.SMTP_USER)
     imap_pass = getattr(config, "IMAP_PASSWORD", config.SMTP_PASSWORD)

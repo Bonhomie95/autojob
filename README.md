@@ -1,6 +1,6 @@
 # 🎯 Auto Job
 
-> Automated job discovery, AI-powered scoring, HR contact extraction, per-company application package generation, auto-send with duplicate guard, follow-up scheduling, and reply detection — all in a clean Flask dashboard.
+> Automated job discovery, token-light scoring, HR contact extraction, per-company application package generation, sender rotation, follow-up scheduling, and reply detection — all in a clean Flask dashboard.
 
 ---
 
@@ -10,9 +10,9 @@ Auto Job runs a full pipeline on demand:
 
 1. **Scrapes** 9 job boards (LinkedIn, Indeed, RemoteOK, WeWorkRemotely, Jobicy, Remotive, Arbeitnow, HackerNews, Google Jobs) for your target roles
 2. **Researches** each company with a brief AI summary — so your cover letters mention real things about the company, not just generic fit language
-3. **Scores** every job against your CV using Groq (`llama-3.3-70b-versatile`) — 0–100 match score
+3. **Scores** every job against your CV — 0–100 match score (AI via Groq, or offline keyword mode — see below)
 4. **Filters** out blacklisted keywords, low-scoring jobs, and duplicates automatically
-5. **Extracts HR contacts** — name, title, email, application URL from the posting (+ optional Hunter.io enrichment)
+5. **Extracts HR contacts** — posting scrape first, then Hunter.io → Prospeo → headless Chromium/search, verified through Reoon/MillionVerifier
 6. **Generates** a fully customized CV + cover letter per company, ATS-optimized for that specific job description
 7. **Sends** application emails automatically with a duplicate guard (won't email the same person twice within 30 days) and smart grouping (one email for multiple roles at the same company)
 8. **Follows up** automatically after 6 days if no reply has been detected
@@ -39,13 +39,13 @@ output/
 | Layer | Tech |
 |---|---|
 | Scraping | `requests`, `BeautifulSoup`, `feedparser` |
-| AI (scoring + generation) | Groq API — `llama-3.3-70b-versatile` |
+| AI (scoring + generation) | Groq API — `llama-3.3-70b-versatile` (optional for scoring) |
 | Document generation | `python-docx`, `reportlab`, LibreOffice (PDF) |
 | Database | SQLite (via stdlib `sqlite3`) |
 | Web UI | Flask 3 + vanilla JS (SSE for live logs) |
 | Config | `.env` via `python-dotenv` |
-| HR enrichment (optional) | Hunter.io API |
-| Reply detection | IMAP (Gmail or any provider) |
+| HR enrichment (optional) | Posting scrape → Hunter.io → Prospeo → Chromium/search → Reoon/MillionVerifier |
+| Reply detection | IMAP (any provider) |
 
 ---
 
@@ -83,7 +83,7 @@ cp .env.example .env
 At minimum, fill in:
 
 ```env
-GROQ_API_KEY=your_groq_key_here
+GROQ_API_KEY_1=your_groq_key_here
 CANDIDATE_NAME=Your Full Name
 CANDIDATE_EMAIL=you@example.com
 TARGET_ROLES=React Native Developer,Full Stack Engineer,Backend Engineer
@@ -91,38 +91,35 @@ TARGET_ROLES=React Native Developer,Full Stack Engineer,Backend Engineer
 
 Get a free Groq key at: https://console.groq.com
 
-### 4. Configure Gmail SMTP (recommended)
+> **No Groq key?** Set `LLM_SCORING=false` and the pipeline scores jobs with a keyword matcher — no API calls needed. Document generation still requires a Groq key (or Ollama).
 
-Gmail is the most reliable SMTP option — port 587 is almost never blocked by ISPs.
+### 4. Configure MailerSend / SMTP2GO (optional)
 
-1. Enable 2-Step Verification on your Google account
-2. Go to **myaccount.google.com → Security → App Passwords**
-3. Generate a password for "Mail"
-4. Add to `.env`:
+Auto-send is off until a sender is configured. MailerSend is tried first, then SMTP2GO.
 
 ```env
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=you@gmail.com
-SMTP_PASSWORD=xxxx xxxx xxxx xxxx   # 16-char App Password
-SMTP_FROM=you@gmail.com
-SMTP_TLS=true
+MAILERSEND_SMTP_USER=your_mailersend_smtp_user
+MAILERSEND_API_KEY=your_mailersend_smtp_password_or_key
+MAILERSEND_SMTP_FROM=verified@yourdomain.com
+
+SMTP2GO_USERNAME=your_smtp2go_username
+SMTP2GO_API_KEY=your_smtp2go_password_or_key
+SMTP2GO_SMTP_FROM=verified@yourdomain.com
+
+SMTP_REPLY_TO=you@example.com
 SMTP_AUTO_SEND=true
 ```
 
-> **Why not Namecheap cPanel?** Ports 465 and 25 are commonly blocked by Nigerian and other ISPs. Port 587 may work but requires `SMTP_TLS=true`. Gmail is simpler and more reliable.
+### 5. Configure IMAP for reply detection (optional)
 
-### 5. Configure Gmail IMAP for reply detection (optional but recommended)
-
-Reply detection uses the same Gmail App Password:
+Reply detection can use any mailbox with IMAP access:
 
 ```env
-IMAP_HOST=imap.gmail.com
+IMAP_HOST=imap.yourmailhost.com
 IMAP_PORT=993
-# IMAP_USER and IMAP_PASSWORD default to your SMTP credentials
+IMAP_USER=you@example.com
+IMAP_PASSWORD=your_imap_password
 ```
-
-Make sure IMAP is enabled in Gmail: **Gmail Settings → See all settings → Forwarding and POP/IMAP → Enable IMAP**.
 
 ### 6. Add your CV
 
@@ -143,19 +140,71 @@ Open: **http://localhost:9000**
 
 ---
 
+## Offline / Free Mode
+
+You can run the full pipeline with **zero paid API calls** by combining two features:
+
+| Feature | Env var | Default |
+|---|---|---|
+| Keyword job scoring (no AI) | `LLM_SCORING=false` | `false` |
+| Ollama for doc generation | `OLLAMA_ENABLED=true` | `false` |
+
+```env
+LLM_SCORING=false        # score jobs with keyword matcher, no quota
+OLLAMA_ENABLED=true      # generate CVs/cover letters via local Ollama
+OLLAMA_MODELS=qwen2.5-coder:32b,gemma3:12b,mistral
+```
+
+The keyword scorer uses TF-IDF-style overlap between your CV and each job description, with phrase bonuses for tech terms (React Native, Node.js, CI/CD, etc.) and a title-match boost. It produces the same score/gaps/ats_keywords schema as the Groq scorer, so nothing else in the pipeline changes.
+
+> `ENRICH_COMPANY_DATA` has no effect when `LLM_SCORING=false` — company research is skipped automatically.
+
+---
+
+## HR Email Enrichment
+
+When an email isn't in the job posting, AutoJob tries free/cheap sources first, stopping as soon as one delivers a verified result:
+
+| Service | Free tier | Sign-up |
+|---|---|---|
+| Hunter.io | 25 domain searches/month | https://hunter.io |
+| Prospeo | 75 domain searches/month | https://prospeo.io |
+| Headless search | Free | DuckDuckGo/Bing/Google via Chromium |
+| Reoon | Free verification credits | https://reoon.com/email-verifier/ |
+| MillionVerifier | Free verification credits | https://www.millionverifier.com/ |
+
+None require a credit card on the free tier. Add keys for any combination you want:
+
+```env
+HUNTER_API_KEY=your_hunter_key
+PROSPEO_API_KEY=your_prospeo_key
+REOON_API_KEY=your_reoon_key
+MILLION_VERIFIER_API_KEY=your_million_verifier_key
+CONTACT_SEARCH_ENABLED=true
+```
+
+If none are configured, AutoJob falls back to browser search and the application URL only. It never fabricates an email.
+
+---
+
 ## Configuration Reference (`.env`)
 
 ### Core
 
 | Variable | Description | Default |
 |---|---|---|
-| `GROQ_API_KEY` | **Required.** Groq API key (or `GROQ_API_KEY_1`…`N` for pool) | — |
+| `GROQ_API_KEY` | Groq API key (or `GROQ_API_KEY_1`…`N` for pool) | — |
+| `LLM_SCORING` | `true` = Groq scoring; `false` = keyword scoring (no API) | `false` |
 | `HUNTER_API_KEY` | Hunter.io for HR email discovery (25/month free) | — |
+| `PROSPEO_API_KEY` | Prospeo for HR email discovery (75/month free) | — |
+| `REOON_API_KEY` | Email verification before sending | — |
+| `MILLION_VERIFIER_API_KEY` | Secondary email verification before sending | — |
+| `CONTACT_SEARCH_ENABLED` | Use headless Chromium/search for lead discovery | `true` |
 | `TARGET_ROLES` | Comma-separated job titles to search | — |
 | `KEYWORDS` | Keywords to prioritize in matching | — |
 | `BLACKLIST_KEYWORDS` | Jobs containing these are auto-skipped | `internship,unpaid` |
-| `MIN_MATCH_SCORE` | Min Groq score (0–100) to generate documents | `60` |
-| `ENRICH_COMPANY_DATA` | Fetch company summary for richer personalisation | `true` |
+| `MIN_MATCH_SCORE` | Min score (0–100) to generate documents | `60` |
+| `ENRICH_COMPANY_DATA` | Fetch company summary for richer personalisation (LLM only) | `true` |
 | `GENERATE_DOCS_WITHOUT_HR` | Generate docs even when no HR contact found | `false` |
 
 ### Candidate
@@ -173,10 +222,10 @@ Open: **http://localhost:9000**
 
 | Variable | Description | Default |
 |---|---|---|
-| `SMTP_HOST` | SMTP server hostname | `smtp.gmail.com` |
+| `SMTP_HOST` | Optional generic SMTP fallback hostname | — |
 | `SMTP_PORT` | SMTP port (587 = STARTTLS, 465 = SSL) | `587` |
 | `SMTP_USER` | SMTP username (usually your email) | — |
-| `SMTP_PASSWORD` | SMTP password / Gmail App Password | — |
+| `SMTP_PASSWORD` | Optional generic SMTP password | — |
 | `SMTP_FROM` | From address | — |
 | `SMTP_TLS` | Enable STARTTLS (required for port 587) | `true` |
 | `SMTP_AUTO_SEND` | Send automatically during pipeline run | `false` |
@@ -184,6 +233,10 @@ Open: **http://localhost:9000**
 | `SMTP_ATTACH_DOCX` | Attach DOCX documents | `false` |
 | `SMTP_THROTTLE_SECONDS` | Min seconds between sends | `8` |
 | `SMTP_FORMAT` | `plain` or `mixed` (plain+HTML) | `plain` |
+| `SMTP_REPLY_TO` | Reply address used for all sender providers | `CANDIDATE_EMAIL` |
+| `EMAIL_DAILY_LIMIT` | Hard cap across all senders | `100` |
+| `MAILERSEND_API_KEY` | Optional MailerSend SMTP password/API key for sender rotation | — |
+| `SMTP2GO_API_KEY` | Optional SMTP2GO key for sender rotation | — |
 
 ### Duplicate Guard
 
@@ -197,7 +250,7 @@ Open: **http://localhost:9000**
 |---|---|---|
 | `FOLLOW_UP_ENABLED` | Enable automatic follow-up emails | `true` |
 | `FOLLOW_UP_DAYS` | Days after first send before follow-up fires | `6` |
-| `IMAP_HOST` | IMAP server for reply detection | `imap.gmail.com` |
+| `IMAP_HOST` | IMAP server for reply detection | — |
 | `IMAP_PORT` | IMAP port | `993` |
 | `IMAP_USER` | IMAP username (defaults to `SMTP_USER`) | — |
 | `IMAP_PASSWORD` | IMAP password (defaults to `SMTP_PASSWORD`) | — |
@@ -311,7 +364,7 @@ output/
 
 ## Groq API Usage
 
-All AI tasks use `llama-3.3-70b-versatile`:
+When `LLM_SCORING=true`, all AI tasks use `llama-3.3-70b-versatile`:
 
 | Task | Calls per job |
 |---|---|
@@ -323,15 +376,14 @@ All AI tasks use `llama-3.3-70b-versatile`:
 
 A typical run with 30 new jobs → 10 qualified → ~60–65 Groq calls. Add multiple keys (`GROQ_API_KEY_1`…`N`) to parallelize and avoid rate-limit delays.
 
+Set `LLM_SCORING=false` to eliminate the scoring and company-research calls entirely (~2 calls saved per job).
+
 ---
 
 ## Troubleshooting
 
-**SMTP times out on port 465 / 25**
-Your ISP is blocking those ports (common in Nigeria, some other regions). Switch to Gmail SMTP on port 587 with `SMTP_TLS=true`.
-
-**SMTP connection refused on port 587**
-Run `nc -zv smtp.gmail.com 587` in your terminal to confirm port is reachable. If it fails, use a VPN.
+**SMTP sender not configured**
+Fill either the MailerSend or SMTP2GO SMTP fields, then set `SMTP_AUTO_SEND=true`.
 
 **No jobs scraped from LinkedIn**
 LinkedIn aggressively rate-limits by IP. Enable proxy rotation (`PROXY_ENABLED=true`, `PROXY_LIST=…`) with residential proxies.
@@ -340,7 +392,13 @@ LinkedIn aggressively rate-limits by IP. Enable proxy rotation (`PROXY_ENABLED=t
 Check `FOLLOW_UP_ENABLED=true` and that `IMAP_HOST` / credentials are set. Run `python follow_up_scheduler.py` directly to see debug output.
 
 **Reply detection missing replies**
-IMAP scans the last 500 messages in INBOX. Ensure IMAP is enabled in Gmail settings and that the App Password has IMAP scope.
+IMAP scans the last 500 messages in INBOX. Ensure IMAP is enabled on the mailbox you configured.
+
+**Hunter/Prospeo/search returning no results**
+Each API has a monthly quota on the free tier. The waterfall moves to the next provider automatically when one is exhausted, then browser search tries public recruiter/careers pages.
+
+**Keyword scorer giving low scores for good matches**
+The keyword scorer is literal — it won't match "React" in your CV to "frontend framework" in a JD. Lower `MIN_MATCH_SCORE` to 40–50 when running in keyword mode, or switch back to `LLM_SCORING=true` for semantic matching.
 
 ---
 

@@ -6,13 +6,26 @@ import logging
 from pathlib import Path
 from datetime import datetime
 from flask import (
-    Flask, render_template, jsonify, request,
-    redirect, url_for, send_from_directory, Response, stream_with_context,
+    Flask,
+    render_template,
+    jsonify,
+    request,
+    redirect,
+    url_for,
+    send_from_directory,
+    Response,
+    stream_with_context,
 )
 from werkzeug.utils import secure_filename
 from config import config
 from database import (
-    init_db, get_all_jobs, get_job, get_recent_runs, get_stats, update_job,
+    init_db,
+    get_conn,
+    get_all_jobs,
+    get_job,
+    get_recent_runs,
+    get_stats,
+    update_job,
     get_jobs_needing_follow_up,
 )
 from settings_routes import settings_bp
@@ -44,12 +57,13 @@ _followup_queue: queue.Queue = queue.Queue()
 # Routes
 # ─────────────────────────────────────────────────────────
 
+
 @app.route("/")
 def index():
     init_db()
-    stats    = get_stats()
-    runs     = get_recent_runs(5)
-    jobs     = get_all_jobs(20)
+    stats = get_stats()
+    runs = get_recent_runs(5)
+    jobs = get_all_jobs(20)
     cv_files = _list_cv_files()
     return render_template(
         "index.html",
@@ -62,10 +76,90 @@ def index():
     )
 
 
+# ─────────────────────────────────────────────────────────
+# API — CV profile
+# ─────────────────────────────────────────────────────────
+
+
+@app.route("/api/profile")
+def api_profile():
+    """
+    What the pipeline understands about the candidate, parsed from the CV.
+
+    This is the closest thing to a "why did it do that" endpoint: the roles
+    it will search for, the seniority it will filter by, and the skills it
+    scores against all come from here.
+    """
+    from pipeline import _find_cv
+    from core.cv_profile import get_profile, profile_is_sendable
+    from core.discovery import derive_queries
+    from core.tailor import years_phrase
+
+    cv_path = _find_cv()
+    if not cv_path:
+        return jsonify({
+            "ok": False,
+            "error": "No CV found in input/ — upload one to get started.",
+        })
+
+    try:
+        profile = get_profile(cv_path)
+    except Exception as e:
+        logger.exception("Profile parse failed")
+        return jsonify({"ok": False, "error": f"Could not parse CV: {e}"})
+
+    sendable, blockers = profile_is_sendable(profile)
+    issues = profile.get("issues", [])
+
+    return jsonify({
+        "ok": sendable,
+        "source_file": Path(cv_path).name,
+        "name": profile.get("name", ""),
+        "email": profile.get("email", ""),
+        "phone": profile.get("phone", ""),
+        "location": profile.get("location", ""),
+        "seniority": profile.get("seniority", ""),
+        "years_experience": profile.get("years_experience", 0),
+        "years_label": years_phrase(profile.get("years_experience", 0)),
+        "titles": profile.get("titles", []),
+        "queries": derive_queries(profile),
+        "skills_by_category": profile.get("skills_by_category", {}),
+        "skill_count": len(profile.get("skills", [])),
+        "experience": [
+            {
+                "title": e.get("title", ""),
+                "company": e.get("company", ""),
+                "period": e.get("period", ""),
+                "bullet_count": len(e.get("bullets", [])),
+            }
+            for e in profile.get("experience", [])
+        ],
+        "projects": [p.get("name", "") for p in profile.get("projects", [])],
+        "certifications": profile.get("certifications", []),
+        "education": profile.get("education", []),
+        "blockers": [b[6:].strip() for b in blockers],
+        "warnings": [i[5:].strip() for i in issues if i.startswith("WARN:")],
+    })
+
+
+@app.route("/api/profile/reparse", methods=["POST"])
+def api_profile_reparse():
+    """Drop the cached parse and read the CV again."""
+    from pipeline import _find_cv
+    from core.cv_profile import cv_hash
+
+    cv_path = _find_cv()
+    if not cv_path:
+        return jsonify({"error": "No CV found"}), 404
+    with get_conn() as conn:
+        conn.execute("DELETE FROM cv_profiles WHERE cv_hash = ?", (cv_hash(cv_path),))
+    return jsonify({"status": "ok"})
+
+
 @app.route("/jobs")
 def jobs_page():
-    status   = request.args.get("status", "all")
-    source   = request.args.get("source", "all")
+    status = request.args.get("status", "all")
+    source = request.args.get("source", "all")
     all_jobs = get_all_jobs(500)
 
     if status != "all":
@@ -83,17 +177,22 @@ def job_detail(job_id):
         return "Job not found", 404
     output_files = []
     if job.get("output_dir") and Path(job["output_dir"]).exists():
-        output_files = [f.name for f in Path(job["output_dir"]).iterdir() if f.is_file()]
+        output_files = [
+            f.name for f in Path(job["output_dir"]).iterdir() if f.is_file()
+        ]
     return render_template("job_detail.html", job=job, output_files=output_files)
 
 
 @app.route("/run", methods=["POST"])
 def trigger_run():
     global _run_active
+    from scheduler import is_pipeline_running, mark_pipeline_running
+
     with _run_lock:
-        if _run_active:
+        if _run_active or is_pipeline_running():
             return jsonify({"error": "A run is already in progress"}), 409
         _run_active = True
+        mark_pipeline_running(True)
 
     while not _progress_queue.empty():
         try:
@@ -108,8 +207,10 @@ def trigger_run():
         global _run_active
         try:
             from pipeline import run_pipeline
+
             def progress_cb(msg):
                 _progress_queue.put(msg)
+
             run_pipeline(progress_cb=progress_cb, cv_filename=cv_filename)
         except Exception as e:
             _progress_queue.put(f"❌ Fatal error: {e}")
@@ -118,6 +219,7 @@ def trigger_run():
             _progress_queue.put("__DONE__")
             with _run_lock:
                 _run_active = False
+            mark_pipeline_running(False)
 
     threading.Thread(target=run_in_thread, daemon=True).start()
     return jsonify({"status": "started"})
@@ -171,6 +273,7 @@ def serve_output(filepath):
 # API — stats & jobs
 # ─────────────────────────────────────────────────────────
 
+
 @app.route("/api/stats")
 def api_stats():
     return jsonify(get_stats())
@@ -204,6 +307,7 @@ def update_job_status(job_id):
 @app.route("/api/job/<job_id>/send", methods=["POST"])
 def send_job_email(job_id):
     from mailer import send_application, smtp_configured
+
     if not smtp_configured():
         return jsonify({"error": "SMTP not configured"}), 400
 
@@ -215,22 +319,32 @@ def send_job_email(job_id):
     if not output_dir:
         return jsonify({"error": "No output folder — run pipeline first"}), 400
 
-    data     = request.json or {}
-    to_email = data.get("to_email") or job.get("hr_email") or job.get("application_email") or ""
-    subject  = data.get("subject")
-    body     = data.get("body")
+    data = request.json or {}
+    to_email = (
+        data.get("to_email")
+        or job.get("hr_email")
+        or job.get("application_email")
+        or ""
+    )
+    subject = data.get("subject")
+    body = data.get("body")
 
     if not to_email:
         return jsonify({"error": "No recipient email address found"}), 400
 
     # Allow override of dedup check when manually sending
     skip_dedup = data.get("force", False)
-    success, message = send_application(to_email, output_dir, subject, body,
-                                        skip_dedup_check=skip_dedup)
+    success, message = send_application(
+        to_email, output_dir, subject, body, skip_dedup_check=skip_dedup
+    )
     if success:
-        update_job(job_id, email_status="sent",
-                   email_sent_at=datetime.utcnow().isoformat(),
-                   email_error="", status="applied")
+        update_job(
+            job_id,
+            email_status="sent",
+            email_sent_at=datetime.utcnow().isoformat(),
+            email_error="",
+            status="applied",
+        )
     else:
         update_job(job_id, email_status="failed", email_error=message)
 
@@ -241,9 +355,11 @@ def send_job_email(job_id):
 # API — SMTP
 # ─────────────────────────────────────────────────────────
 
+
 @app.route("/api/smtp/test", methods=["POST"])
 def test_smtp():
     from mailer import test_smtp as _test
+
     ok, msg = _test()
     return jsonify({"success": ok, "message": msg})
 
@@ -251,11 +367,14 @@ def test_smtp():
 @app.route("/api/smtp/send-test", methods=["POST"])
 def send_test_email():
     from mailer import send_application, smtp_configured
-    data     = request.json or {}
+
+    data = request.json or {}
     to_email = (data.get("to_email") or "").strip()
 
     if not to_email:
-        return jsonify({"success": False, "message": "No recipient email provided"}), 400
+        return jsonify(
+            {"success": False, "message": "No recipient email provided"}
+        ), 400
     if not smtp_configured():
         return jsonify({"success": False, "message": "SMTP not configured"}), 400
 
@@ -263,32 +382,50 @@ def send_test_email():
     best_folder = None
     if output_root.exists():
         folders = sorted(
-            [d for d in output_root.iterdir()
-             if d.is_dir() and (d / "CV.pdf").exists() and (d / "EMAIL_DRAFT.txt").exists()],
-            key=lambda d: d.stat().st_mtime, reverse=True,
+            [
+                d
+                for d in output_root.iterdir()
+                if d.is_dir()
+                and (d / "CV.pdf").exists()
+                and (d / "EMAIL_DRAFT.txt").exists()
+            ],
+            key=lambda d: d.stat().st_mtime,
+            reverse=True,
         )
         if folders:
             best_folder = str(folders[0])
 
     if not best_folder and output_root.exists():
         folders = sorted(
-            [d for d in output_root.iterdir() if d.is_dir() and (d / "CV.pdf").exists()],
-            key=lambda d: d.stat().st_mtime, reverse=True,
+            [
+                d
+                for d in output_root.iterdir()
+                if d.is_dir() and (d / "CV.pdf").exists()
+            ],
+            key=lambda d: d.stat().st_mtime,
+            reverse=True,
         )
         if folders:
             best_folder = str(folders[0])
 
     if not best_folder:
-        return jsonify({"success": False,
-                        "message": "No generated documents found. Run the pipeline first."}), 400
+        return jsonify(
+            {
+                "success": False,
+                "message": "No generated documents found. Run the pipeline first.",
+            }
+        ), 400
 
     ok, msg = send_application(to_email, best_folder, skip_dedup_check=True)
-    return jsonify({"success": ok, "message": msg, "folder_used": Path(best_folder).name})
+    return jsonify(
+        {"success": ok, "message": msg, "folder_used": Path(best_folder).name}
+    )
 
 
 # ─────────────────────────────────────────────────────────
 # API — Follow-ups
 # ─────────────────────────────────────────────────────────
+
 
 @app.route("/api/followup/run", methods=["POST"])
 def trigger_followup():
@@ -310,8 +447,10 @@ def trigger_followup():
         global _followup_active
         try:
             from follow_up_scheduler import run_follow_up_cycle
+
             def cb(msg):
                 _followup_queue.put(msg)
+
             run_follow_up_cycle(emit=cb)
         except Exception as e:
             _followup_queue.put(f"❌ Follow-up error: {e}")
@@ -357,6 +496,7 @@ def followup_eligible():
 def send_single_followup(job_id):
     """Manually send a follow-up for a specific job."""
     from mailer import send_follow_up
+
     job = get_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
@@ -367,6 +507,7 @@ def send_single_followup(job_id):
 # ─────────────────────────────────────────────────────────
 # API — Analytics
 # ─────────────────────────────────────────────────────────
+
 
 @app.route("/api/analytics")
 def api_analytics():
@@ -379,16 +520,21 @@ def api_analytics():
 # Helpers
 # ─────────────────────────────────────────────────────────
 
+
 def _list_cv_files() -> list[str]:
     input_dir = Path(config.INPUT_DIR)
     input_dir.mkdir(exist_ok=True)
-    return [f.name for f in input_dir.iterdir()
-            if f.suffix.lower() in (".docx", ".pdf", ".txt")]
+    return [
+        f.name
+        for f in input_dir.iterdir()
+        if f.suffix.lower() in (".docx", ".pdf", ".txt")
+    ]
 
 
 # ─────────────────────────────────────────────────────────
 # API — Scheduler
 # ─────────────────────────────────────────────────────────
+
 
 @app.route("/api/scheduler/status")
 def api_scheduler_status():
@@ -399,14 +545,17 @@ def api_scheduler_status():
 def api_scheduler_run_now():
     """Trigger an immediate scheduled run (same as clicking Run but from cron context)."""
     import threading
+
     def _run():
         from pipeline import run_pipeline
         from notifier import notify_run_complete, notify_run_error
+
         try:
             result = run_pipeline()
             notify_run_complete(result)
         except Exception as e:
             notify_run_error(str(e))
+
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"status": "started"})
 
@@ -414,6 +563,7 @@ def api_scheduler_run_now():
 # ─────────────────────────────────────────────────────────
 # API — CV Versions
 # ─────────────────────────────────────────────────────────
+
 
 @app.route("/api/cv/list")
 def api_cv_list():
@@ -423,11 +573,15 @@ def api_cv_list():
     files = [
         {
             "filename": f.name,
-            "size_kb":  round(f.stat().st_size / 1024, 1),
-            "modified": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
-            "active":   f.name == (getattr(config, "ACTIVE_CV", "") or ""),
+            "size_kb": round(f.stat().st_size / 1024, 1),
+            "modified": datetime.fromtimestamp(f.stat().st_mtime).strftime(
+                "%Y-%m-%d %H:%M"
+            ),
+            "active": f.name == (getattr(config, "ACTIVE_CV", "") or ""),
         }
-        for f in sorted(input_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)
+        for f in sorted(
+            input_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True
+        )
         if f.suffix.lower() in (".docx", ".pdf", ".txt")
     ]
     return jsonify({"files": files, "active": getattr(config, "ACTIVE_CV", "")})
@@ -436,7 +590,7 @@ def api_cv_list():
 @app.route("/api/cv/set-active", methods=["POST"])
 def api_cv_set_active():
     """Pin a CV file as the active version for future runs."""
-    data     = request.json or {}
+    data = request.json or {}
     filename = data.get("filename", "").strip()
     if filename and not (Path(config.INPUT_DIR) / filename).exists():
         return jsonify({"error": f"File not found: {filename}"}), 404
@@ -448,7 +602,7 @@ def api_cv_set_active():
 
 @app.route("/api/cv/delete", methods=["POST"])
 def api_cv_delete():
-    data     = request.json or {}
+    data = request.json or {}
     filename = data.get("filename", "").strip()
     if not filename:
         return jsonify({"error": "No filename provided"}), 400
@@ -467,24 +621,32 @@ def api_cv_delete():
 # API — Portal
 # ─────────────────────────────────────────────────────────
 
+
 @app.route("/api/portal/status")
 def api_portal_status():
     """Check if Playwright is installed and ready."""
     from portal_filler import portal_available
+
     available = portal_available()
-    return jsonify({
-        "available": available,
-        "enabled":   str(getattr(config, "PORTAL_ENABLED", "false")).lower() == "true",
-        "message":   "Ready" if available else (
-            "Playwright not installed. Run: pip install playwright && playwright install chromium"
-        ),
-    })
+    return jsonify(
+        {
+            "available": available,
+            "enabled": str(getattr(config, "PORTAL_ENABLED", "false")).lower()
+            == "true",
+            "message": "Ready"
+            if available
+            else (
+                "Playwright not installed. Run: pip install playwright && playwright install chromium"
+            ),
+        }
+    )
 
 
 @app.route("/api/job/<job_id>/portal-fill", methods=["POST"])
 def api_portal_fill(job_id):
     """Manually trigger portal fill for a specific job."""
     from portal_filler import fill_portal
+
     job = get_job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
@@ -513,6 +675,7 @@ def api_portal_fill(job_id):
 def api_portal_eligible():
     """Jobs that have an apply URL but no email sent — portal candidates."""
     from database import get_jobs_for_portal
+
     jobs = get_jobs_for_portal()
     return jsonify({"count": len(jobs), "jobs": jobs})
 
@@ -520,6 +683,7 @@ def api_portal_eligible():
 # ─────────────────────────────────────────────────────────
 # API — Notifications
 # ─────────────────────────────────────────────────────────
+
 
 @app.route("/api/notify/test", methods=["POST"])
 def api_notify_test():
@@ -530,6 +694,7 @@ def api_notify_test():
 # ─────────────────────────────────────────────────────────
 # API Key status
 # ─────────────────────────────────────────────────────────
+
 
 @app.route("/api/keys/status")
 def api_keys_status():
@@ -549,44 +714,60 @@ def api_keys_status():
         else:
             status = "rate_limited"
             recovers_in = round(exhausted_until - now)
-        groq_keys.append({
-            "index":       i + 1,
-            "key_hint":    entry["key"][:8] + "…" + entry["key"][-4:],
-            "status":      status,
-            "recovers_in": recovers_in,   # seconds, None if ok
-        })
+        groq_keys.append(
+            {
+                "index": i + 1,
+                "key_hint": entry["key"][:8] + "…" + entry["key"][-4:],
+                "status": status,
+                "recovers_in": recovers_in,  # seconds, None if ok
+            }
+        )
 
-    # ── Hunter ────────────────────────────────────────────
-    all_hunter = [k for k in config.HUNTER_API_KEYS if k]
-    with contact_extractor._hunter_lock:
-        exhausted_set = set(contact_extractor._exhausted_keys)
-    hunter_keys = []
-    for i, k in enumerate(all_hunter):
-        hunter_keys.append({
-            "index":    i + 1,
-            "key_hint": k[:8] + "…" + k[-4:],
-            "status":   "exhausted" if k in exhausted_set else "ok",
-        })
+    # ── Contact provider pools ─────────────────────────────
+    def provider_status(base_name, keys):
+        state = contact_extractor._KEY_STATE.get(base_name, {"dead": set()})
+        dead = set(state.get("dead", set()))
+        return [
+            {
+                "index": i + 1,
+                "key_hint": k[:8] + "…" + k[-4:],
+                "status": "exhausted" if k in dead else "ok",
+            }
+            for i, k in enumerate([key for key in keys if key])
+        ]
 
-    return jsonify({
-        "groq": {
-            "total":        len(groq_keys),
-            "ok":           sum(1 for k in groq_keys if k["status"] == "ok"),
-            "rate_limited": sum(1 for k in groq_keys if k["status"] == "rate_limited"),
-            "keys":         groq_keys,
-        },
-        "hunter": {
-            "total":     len(hunter_keys),
-            "ok":        sum(1 for k in hunter_keys if k["status"] == "ok"),
-            "exhausted": sum(1 for k in hunter_keys if k["status"] == "exhausted"),
-            "keys":      hunter_keys,
-        },
-    })
+    hunter_keys = provider_status("HUNTER_API_KEY", config.HUNTER_API_KEYS)
+    prospeo_keys = provider_status("PROSPEO_API_KEY", config.PROSPEO_API_KEYS)
+    reoon_keys = provider_status("REOON_API_KEY", config.REOON_API_KEYS)
+    million_keys = provider_status("MILLION_VERIFIER_API_KEY", config.MILLION_VERIFIER_API_KEYS)
+
+    return jsonify(
+        {
+            "groq": {
+                "total": len(groq_keys),
+                "ok": sum(1 for k in groq_keys if k["status"] == "ok"),
+                "rate_limited": sum(
+                    1 for k in groq_keys if k["status"] == "rate_limited"
+                ),
+                "keys": groq_keys,
+            },
+            "hunter": {
+                "total": len(hunter_keys),
+                "ok": sum(1 for k in hunter_keys if k["status"] == "ok"),
+                "exhausted": sum(1 for k in hunter_keys if k["status"] == "exhausted"),
+                "keys": hunter_keys,
+            },
+            "prospeo": {"total": len(prospeo_keys), "keys": prospeo_keys},
+            "reoon": {"total": len(reoon_keys), "keys": reoon_keys},
+            "million_verifier": {"total": len(million_keys), "keys": million_keys},
+        }
+    )
 
 
 # ─────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────
+
 
 def _update_env_key(key: str, value: str):
     """Update or add a key=value line in .env file."""
@@ -621,5 +802,56 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=config.FLASK_PORT,
         debug=config.FLASK_DEBUG,
-        use_reloader=False,   # Disable reloader — it double-starts the scheduler
+        use_reloader=False,  # Disable reloader — it double-starts the scheduler
+    )
+
+
+# ─────────────────────────────────────────────────────────
+# API — Portal backlog cleanup
+# ─────────────────────────────────────────────────────────
+
+
+@app.route("/api/portal/clear-login-backlog", methods=["POST"])
+def api_portal_clear_login_backlog():
+    """
+    One-shot cleanup: mark all backlogged portal jobs that are stuck due
+    to login walls as 'skipped' so they stop clogging the retry queue.
+    """
+    import sqlite3
+
+    db_path = config.DB_PATH
+    login_signals = [
+        "portal requires login",
+        "skip:login_required",
+        "requires login",
+        "login required",
+    ]
+    conditions = " OR ".join(["LOWER(portal_error) LIKE ?" for _ in login_signals])
+    params = [f"%{s}%" for s in login_signals]
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            result = conn.execute(
+                f"""UPDATE jobs
+                       SET portal_status = 'skipped',
+                           portal_error  = 'SKIP:login_required — cleared by bulk cleanup'
+                     WHERE portal_status IN ('pending', 'failed')
+                       AND (
+                             ({conditions})
+                             OR LOWER(application_url) LIKE '%linkedin.com/jobs%'
+                             OR LOWER(application_url) LIKE '%linkedin.com/authwall%'
+                           )""",
+                params,
+            )
+            conn.commit()
+            cleared = result.rowcount
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    return jsonify(
+        {
+            "success": True,
+            "cleared": cleared,
+            "message": f"Marked {cleared} backlogged portal job(s) as skipped",
+        }
     )

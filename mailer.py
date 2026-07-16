@@ -1,5 +1,5 @@
 """
-mailer.py — SMTP email sender for Auto Job.
+mailer.py — API email sender for Auto Job.
 
 Improvements in this version:
   * Follow-up emails — auto-sends a polite nudge after FOLLOW_UP_DAYS
@@ -9,29 +9,21 @@ Improvements in this version:
   * Grouped multi-role sends — if the pipeline finds N jobs at the same
     company with the same HR contact, they are batched into one email
     listing all matching roles rather than N separate messages.
-  * Gmail SMTP supported out of the box (port 587 + STARTTLS).
-  * RFC headers, proper MIME types, throttle, hard-bounce detection
-    all retained from previous version.
+  * API sender rotation supports Brevo and SMTP2GO.
+  * Reply-To, attachments, throttle, hard-bounce detection retained.
 """
 
+import base64
 import time
-import uuid
-import socket
 import logging
-import smtplib
 import threading
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email.utils import formatdate, make_msgid, formataddr
-from email.header import Header
-from email import encoders
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+import requests
 
 from config import config
-from database import update_job, email_already_sent_to
+from database import update_job, email_already_sent_to, emails_sent_today
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +33,9 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────
 _throttle_lock = threading.Lock()
 _last_send_at = 0.0
+_provider_lock = threading.Lock()
+_dead_providers: set[str] = set()
+_provider_index = 0
 
 
 def _wait_throttle():
@@ -62,27 +57,27 @@ def _wait_throttle():
 # ──────────────────────────────────────────────────────────
 
 def smtp_configured() -> bool:
-    return bool(
-        config.SMTP_HOST
-        and config.SMTP_USER
-        and config.SMTP_PASSWORD
-        and config.SMTP_FROM
-    )
+    return bool(getattr(config, "EMAIL_PROVIDERS", []))
 
 
-def _build_smtp():
-    host = config.SMTP_HOST
-    port = config.SMTP_PORT
-    if port == 465:
-        server = smtplib.SMTP_SSL(host, port, timeout=30)
-    else:
-        server = smtplib.SMTP(host, port, timeout=30)
-        server.ehlo()
-        if config.SMTP_TLS:
-            server.starttls()
-            server.ehlo()
-    server.login(config.SMTP_USER, config.SMTP_PASSWORD)
-    return server
+def _next_email_provider() -> dict | None:
+    global _provider_index
+    providers = getattr(config, "EMAIL_PROVIDERS", [])
+    with _provider_lock:
+        live = [p for p in providers if p.get("name") not in _dead_providers]
+        if not live:
+            return None
+        _provider_index %= len(live)
+        provider = live[_provider_index]
+        _provider_index = (_provider_index + 1) % len(live)
+        return provider
+
+
+def _mark_provider_dead(provider: dict, reason: str):
+    name = provider.get("name", "smtp")
+    with _provider_lock:
+        _dead_providers.add(name)
+    logger.warning(f"[Mailer] Provider '{name}' disabled for this session: {reason}")
 
 
 _MIME_BY_EXT = {
@@ -145,14 +140,6 @@ def _read_draft(output_dir: str) -> tuple[str, str]:
     return (subject or "Job Application"), (body or "Please find my attached application documents.")
 
 
-def _safe_subject(subject: str) -> str:
-    try:
-        subject.encode("ascii")
-        return subject
-    except UnicodeEncodeError:
-        return str(Header(subject, charset="utf-8"))
-
-
 def _body_to_html(plain: str) -> str:
     import html as html_mod
     escaped = html_mod.escape(plain)
@@ -171,51 +158,118 @@ def _body_to_html(plain: str) -> str:
     )
 
 
-def _attach_file(outer: MIMEMultipart, filepath: Path):
-    ext = filepath.suffix.lower()
-    maintype, subtype = _MIME_BY_EXT.get(ext, ("application", "octet-stream"))
-    try:
-        with open(filepath, "rb") as f:
-            part = MIMEBase(maintype, subtype)
-            part.set_payload(f.read())
-        encoders.encode_base64(part)
-        part.add_header(
-            "Content-Disposition",
-            "attachment",
-            filename=("utf-8", "", filepath.name),
-        )
-        outer.attach(part)
-    except Exception as e:
-        logger.warning(f"[Mailer] Could not attach {filepath.name}: {e}")
+def _encoded_attachments(attachments: list[Path]) -> list[dict]:
+    encoded = []
+    for path in attachments:
+        try:
+            content = base64.b64encode(path.read_bytes()).decode("ascii")
+            maintype, subtype = _MIME_BY_EXT.get(path.suffix.lower(), ("application", "octet-stream"))
+            encoded.append({
+                "name": path.name,
+                "content": content,
+                "mime": f"{maintype}/{subtype}",
+            })
+        except Exception as e:
+            logger.warning(f"[Mailer] Could not attach {path.name}: {e}")
+    return encoded
 
 
-def _build_message(to_email: str, subject: str, body: str,
-                   attachments: list[Path]) -> MIMEMultipart:
-    fmt = (getattr(config, "SMTP_FORMAT", "plain") or "plain").lower()
-    outer = MIMEMultipart("mixed")
-    outer["From"]         = formataddr((str(Header(config.CANDIDATE_NAME, "utf-8")),
-                                        config.SMTP_FROM))
-    outer["To"]           = to_email
-    outer["Subject"]      = _safe_subject(subject)
-    outer["Reply-To"]     = config.SMTP_FROM
-    outer["Date"]         = formatdate(localtime=True)
-    sender_domain         = config.SMTP_FROM.split("@", 1)[-1] if "@" in config.SMTP_FROM else "localhost"
-    outer["Message-ID"]   = make_msgid(domain=sender_domain)
-    outer["MIME-Version"] = "1.0"
-    outer["X-Mailer"]     = "JobHunter/2.0"
+def _send_brevo(provider: dict, to_email: str, subject: str, body: str,
+                attachments: list[Path]) -> tuple[bool, str]:
+    reply_to = getattr(config, "SMTP_REPLY_TO", "") or config.CANDIDATE_EMAIL
+    payload = {
+        "sender": {"name": provider.get("from_name") or config.CANDIDATE_NAME, "email": provider["from"]},
+        "to": [{"email": to_email}],
+        "replyTo": {"email": reply_to},
+        "subject": subject,
+        "textContent": body,
+    }
+    if getattr(config, "SMTP_FORMAT", "plain") == "mixed":
+        payload["htmlContent"] = _body_to_html(body)
+    encoded = _encoded_attachments(attachments)
+    if encoded:
+        payload["attachment"] = [{"name": a["name"], "content": a["content"]} for a in encoded]
 
-    if fmt == "mixed":
-        alt = MIMEMultipart("alternative")
-        alt.attach(MIMEText(body, "plain", "utf-8"))
-        alt.attach(MIMEText(_body_to_html(body), "html", "utf-8"))
-        outer.attach(alt)
-    else:
-        outer.attach(MIMEText(body, "plain", "utf-8"))
+    resp = requests.post(
+        "https://api.brevo.com/v3/smtp/email",
+        headers={"api-key": provider["api_key"], "Content-Type": "application/json"},
+        json=payload,
+        timeout=30,
+    )
+    if resp.status_code in (200, 201, 202):
+        return True, "Brevo accepted message"
+    return False, f"Brevo {resp.status_code}: {resp.text[:300]}"
 
-    for filepath in attachments:
-        _attach_file(outer, filepath)
 
-    return outer
+def _send_smtp2go(provider: dict, to_email: str, subject: str, body: str,
+                  attachments: list[Path]) -> tuple[bool, str]:
+    reply_to = getattr(config, "SMTP_REPLY_TO", "") or config.CANDIDATE_EMAIL
+    payload = {
+        "sender": f"{provider.get('from_name') or config.CANDIDATE_NAME} <{provider['from']}>",
+        "to": [to_email],
+        "subject": subject,
+        "text_body": body,
+        "custom_headers": [{"header": "Reply-To", "value": reply_to}],
+    }
+    if getattr(config, "SMTP_FORMAT", "plain") == "mixed":
+        payload["html_body"] = _body_to_html(body)
+    encoded = _encoded_attachments(attachments)
+    if encoded:
+        payload["attachments"] = [
+            {"filename": a["name"], "fileblob": a["content"], "mimetype": a["mime"]}
+            for a in encoded
+        ]
+
+    resp = requests.post(
+        "https://api.smtp2go.com/v3/email/send",
+        headers={"X-Smtp2go-Api-Key": provider["api_key"], "Content-Type": "application/json"},
+        json=payload,
+        timeout=30,
+    )
+    if resp.status_code == 200:
+        data = resp.json()
+        failures = data.get("data", {}).get("failures", 0)
+        if failures:
+            return False, f"SMTP2GO failures: {data}"
+        return True, "SMTP2GO accepted message"
+    return False, f"SMTP2GO {resp.status_code}: {resp.text[:300]}"
+
+
+def _send_via_provider(provider: dict, to_email: str, subject: str, body: str,
+                       attachments: list[Path]) -> tuple[bool, str]:
+    if provider["name"] == "brevo":
+        return _send_brevo(provider, to_email, subject, body, attachments)
+    if provider["name"] == "smtp2go":
+        return _send_smtp2go(provider, to_email, subject, body, attachments)
+    return False, f"Unknown provider: {provider.get('name')}"
+
+
+def _send_api_email(to_email: str, subject: str, body: str,
+                    attachments: list[Path]) -> tuple[bool, str]:
+    if not smtp_configured():
+        return False, "No email API sender configured"
+
+    last_error = ""
+    max_attempts = max(config.SMTP_RETRY_COUNT + 1, len(getattr(config, "EMAIL_PROVIDERS", [])))
+    for attempt in range(1, max_attempts + 1):
+        provider = _next_email_provider()
+        if not provider:
+            return False, f"All email providers exhausted. Last error: {last_error}"
+        try:
+            logger.info(f"[Mailer] Provider: {provider.get('name')} API")
+            ok, msg = _send_via_provider(provider, to_email, subject, body, attachments)
+            if ok:
+                return True, f"Sent via {provider.get('name')}: {msg}"
+            last_error = msg
+            if any(code in last_error.lower() for code in ("401", "402", "403", "429", "rate", "quota", "limit", "suspended")):
+                _mark_provider_dead(provider, last_error)
+            logger.warning(f"[Mailer] Attempt {attempt} API error: {last_error}")
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"[Mailer] Attempt {attempt} failed: {last_error}")
+        if attempt <= max_attempts:
+            time.sleep(5 * attempt)
+    return False, f"Failed after {max_attempts} provider attempt(s): {last_error}"
 
 
 # ──────────────────────────────────────────────────────────
@@ -252,7 +306,11 @@ def send_application(
     Returns (success, message).
     """
     if not smtp_configured():
-        return False, "SMTP not configured — set password in Settings"
+        return False, "No email API sender configured - set BREVO_API_KEY or SMTP2GO_API_KEY plus verified from address"
+
+    daily_limit = int(getattr(config, "EMAIL_DAILY_LIMIT", 100))
+    if daily_limit > 0 and emails_sent_today() >= daily_limit:
+        return False, f"Daily send limit reached ({daily_limit})"
 
     # ── Duplicate guard ───────────────────────────────────
     if not skip_dedup_check:
@@ -275,8 +333,6 @@ def send_application(
     if not body.strip():
         body = "Please find my attached application documents."
 
-    msg = _build_message(to_email, subject, body, attachments)
-
     logger.info(f"[Mailer] Sending to: {to_email}")
     logger.info(f"[Mailer] Subject: {subject}")
     logger.info(f"[Mailer] Attachments: {[a.name for a in attachments]}")
@@ -284,43 +340,34 @@ def send_application(
     _wait_throttle()
 
     last_error = ""
-    for attempt in range(1, config.SMTP_RETRY_COUNT + 2):
+    max_attempts = max(config.SMTP_RETRY_COUNT + 1, len(getattr(config, "EMAIL_PROVIDERS", [])))
+    for attempt in range(1, max_attempts + 1):
+        provider = _next_email_provider()
+        if not provider:
+            return False, f"All email providers exhausted. Last error: {last_error}"
         try:
-            server = _build_smtp()
-            server.sendmail(config.SMTP_FROM, [to_email], msg.as_string())
-            server.quit()
-            files = ", ".join(f.name for f in attachments)
-            return True, f"Sent to {to_email} with: {files}"
-
-        except smtplib.SMTPAuthenticationError:
-            return False, "SMTP authentication failed — check username/password in Settings"
-
-        except smtplib.SMTPRecipientsRefused as e:
-            return False, f"Recipient refused: {to_email} ({e})"
-
-        except smtplib.SMTPDataError as e:
-            last_error = f"{e.smtp_code} {e.smtp_error.decode('utf-8', 'replace') if isinstance(e.smtp_error, bytes) else e.smtp_error}"
+            logger.info(f"[Mailer] Provider: {provider.get('name')} API")
+            ok, msg = _send_via_provider(provider, to_email, subject, body, attachments)
+            if ok:
+                files = ", ".join(f.name for f in attachments)
+                return True, f"Sent to {to_email} via {provider.get('name')} with: {files}"
+            last_error = msg
             if _is_hard_fail(last_error):
-                return False, f"Hard bounce — not retrying: {last_error}"
-            logger.warning(f"[Mailer] Attempt {attempt} SMTP error: {last_error}")
-
-        except (smtplib.SMTPSenderRefused, smtplib.SMTPHeloError) as e:
-            return False, f"SMTP rejected: {e}"
-
-        except (socket.timeout, smtplib.SMTPConnectError) as e:
-            last_error = f"Connection error: {e}"
-            logger.warning(f"[Mailer] Attempt {attempt} connection issue: {e}")
+                return False, f"Hard bounce - not retrying: {last_error}"
+            if any(code in last_error for code in ("401", "402", "403", "429", "rate", "quota", "limit", "suspended")):
+                _mark_provider_dead(provider, last_error)
+            logger.warning(f"[Mailer] Attempt {attempt} API error: {last_error}")
 
         except Exception as e:
             last_error = str(e)
             if _is_hard_fail(last_error):
-                return False, f"Hard bounce — not retrying: {last_error}"
+                return False, f"Hard bounce - not retrying: {last_error}"
             logger.warning(f"[Mailer] Attempt {attempt} failed: {last_error}")
 
-        if attempt <= config.SMTP_RETRY_COUNT:
+        if attempt <= max_attempts:
             time.sleep(5 * attempt)
 
-    return False, f"Failed after {config.SMTP_RETRY_COUNT + 1} attempt(s): {last_error}"
+    return False, f"Failed after {max_attempts} provider attempt(s): {last_error}"
 
 
 # ──────────────────────────────────────────────────────────
@@ -359,16 +406,15 @@ def send_follow_up(job: dict, emit=None) -> bool:
     )
 
     if not smtp_configured():
-        log(f"  ⚠ SMTP not configured — cannot send follow-up to {company}")
+        log(f"  ⚠ Email API not configured — cannot send follow-up to {company}")
         return False
 
     _wait_throttle()
 
     try:
-        msg = _build_message(to_email, subject, body, [])
-        server = _build_smtp()
-        server.sendmail(config.SMTP_FROM, [to_email], msg.as_string())
-        server.quit()
+        ok, msg = _send_api_email(to_email, subject, body, [])
+        if not ok:
+            raise RuntimeError(msg)
         update_job(
             job_id,
             follow_up_status="sent",
@@ -430,6 +476,11 @@ def send_grouped_application(jobs: list[dict], emit=None) -> tuple[int, int]:
     )
 
     if not to_email:
+        return 0, len(jobs)
+
+    daily_limit = int(getattr(config, "EMAIL_DAILY_LIMIT", 100))
+    if daily_limit > 0 and emails_sent_today() >= daily_limit:
+        log(f"  ⚠ Daily send limit reached ({daily_limit}) — skipping {len(jobs)} job(s)")
         return 0, len(jobs)
 
     # Duplicate guard on the whole group
@@ -500,13 +551,12 @@ def send_grouped_application(jobs: list[dict], emit=None) -> tuple[int, int]:
             log(f"  ⚠ No attachments found for grouped send to {company}")
             return 0, len(jobs)
 
-        msg = _build_message(to_email, subject, body, all_attachments)
         _wait_throttle()
 
         try:
-            server = _build_smtp()
-            server.sendmail(config.SMTP_FROM, [to_email], msg.as_string())
-            server.quit()
+            ok, msg = _send_api_email(to_email, subject, body, all_attachments)
+            if not ok:
+                raise RuntimeError(msg)
             now_str = datetime.utcnow().isoformat()
             for job in jobs:
                 update_job(
@@ -582,12 +632,6 @@ def send_for_job(job: dict, emit=None) -> bool:
 
 def test_smtp() -> tuple[bool, str]:
     if not smtp_configured():
-        return False, "SMTP settings incomplete — fill in host, user, password and from address"
-    try:
-        server = _build_smtp()
-        server.quit()
-        return True, f"✅ Connected to {config.SMTP_HOST}:{config.SMTP_PORT} and authenticated successfully"
-    except smtplib.SMTPAuthenticationError:
-        return False, "❌ Authentication failed — check your username and password"
-    except Exception as e:
-        return False, f"❌ {e}"
+        return False, "Email API settings incomplete - fill BREVO_API_KEY or SMTP2GO_API_KEY and a verified from address"
+    providers = [p.get("name") for p in getattr(config, "EMAIL_PROVIDERS", []) if p.get("name") not in _dead_providers]
+    return True, f"✅ Email API provider(s) configured: {', '.join(providers)}"

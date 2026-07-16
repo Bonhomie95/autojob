@@ -1,275 +1,192 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — Auto Job{% endblock %}
+{% block title %}Dashboard — AutoJob{% endblock %}
 
 {% block content %}
-<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1.5rem; flex-wrap:wrap; gap:1rem;">
+<style>
+  /* Identity gets the room it needs; the three derived figures share the rest
+     evenly and drop to their own row together rather than one at a time. */
+  .profile-head {
+    display: grid;
+    grid-template-columns: minmax(200px, 1.6fr) repeat(3, minmax(110px, 1fr));
+    gap: var(--sp-4);
+    align-items: start;
+    margin-bottom: var(--sp-5);
+  }
+  .profile-head > * + * {
+    border-left: 1px solid var(--border);
+    padding-left: var(--sp-4);
+  }
+  @media (max-width: 760px) {
+    .profile-head { grid-template-columns: repeat(3, 1fr); }
+    .profile-head > .profile-id { grid-column: 1 / -1; }
+    .profile-head > .profile-id + * { border-left: 0; padding-left: 0; }
+  }
+</style>
+
+<div class="spread" style="margin-bottom:var(--sp-5);">
   <div>
-    <h1 style="font-size:1.5rem; font-weight:700;">Dashboard</h1>
-    <p style="color:var(--text-dim); margin-top:.25rem;">Automated job discovery, scoring & application packages</p>
+    <h1 class="page-title">Dashboard</h1>
+    <p class="page-sub">Reads your CV, finds matching roles, and applies — on its own.</p>
   </div>
-  <button id="run-btn" class="btn btn-primary" onclick="startRun()">
-    ▶ Run Pipeline
-  </button>
+  <div class="row">
+    <button id="followup-btn" class="btn btn-ghost" onclick="startFollowup()">✉ Follow-ups</button>
+    <button id="run-btn" class="btn btn-primary btn-lg" onclick="startRun()">▶ Run pipeline</button>
+  </div>
 </div>
 
-<!-- Stats -->
-<div class="stats-grid" style="margin-bottom:1.5rem;">
-  <a href="/jobs" style="text-decoration:none;">
-    <div class="stat-card" style="cursor:pointer; transition:border-color .15s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-      <div class="stat-value">{{ stats.total }}</div>
-      <div class="stat-label">Total Jobs Found</div>
+<!-- ══ CV Profile — what the pipeline understands about you ══ -->
+<div class="card" id="profile-card" style="margin-bottom:var(--sp-4);">
+  <div class="card-head">
+    <div class="card-title">👤 Your profile <span class="hint" id="profile-src"></span></div>
+    <div class="row">
+      <button class="btn btn-ghost btn-sm" onclick="reparseProfile()">↻ Re-read CV</button>
     </div>
+  </div>
+  <div id="profile-body">
+    <div class="hint"><span class="spin">◜</span> Reading your CV…</div>
+  </div>
+</div>
+
+<!-- ══ Live console ══ -->
+<div class="card hidden" id="console-card" style="margin-bottom:var(--sp-4);">
+  <div class="card-head">
+    <div class="card-title"><span class="dot dot-live"></span> <span id="console-title">Pipeline running</span></div>
+    <button class="btn btn-ghost btn-sm" onclick="document.getElementById('console-card').classList.add('hidden')">✕</button>
+  </div>
+  <div class="console" id="console"></div>
+</div>
+
+<!-- ══ Stats ══ -->
+<div class="grid grid-3" style="margin-bottom:var(--sp-4);">
+  <a class="stat" href="/jobs">
+    <div class="stat-value">{{ stats.total }}</div>
+    <div class="stat-label">Jobs seen</div>
   </a>
-  <a href="/jobs?status=done" style="text-decoration:none;">
-    <div class="stat-card" style="cursor:pointer; transition:border-color .15s;" onmouseover="this.style.borderColor='var(--green)'" onmouseout="this.style.borderColor='var(--border)'">
-      <div class="stat-value" style="color:var(--green);">{{ stats.done }}</div>
-      <div class="stat-label">Packages Generated</div>
-    </div>
+  <a class="stat" href="/jobs?status=done">
+    <div class="stat-value" style="color:var(--green);">{{ stats.done }}</div>
+    <div class="stat-label">Packages built</div>
   </a>
-  <a href="/jobs" style="text-decoration:none;">
-    <div class="stat-card" style="cursor:pointer; transition:border-color .15s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-      <div class="stat-value">{{ stats.today }}</div>
-      <div class="stat-label">Found Today</div>
-    </div>
+  <a class="stat" href="/jobs?status=applied">
+    <div class="stat-value" style="color:var(--purple);">{{ stats.emails_sent }}</div>
+    <div class="stat-label">Applications sent</div>
   </a>
-  <a href="/jobs?status=skipped" style="text-decoration:none;">
-    <div class="stat-card" style="cursor:pointer; transition:border-color .15s;" onmouseover="this.style.borderColor='var(--gray)'" onmouseout="this.style.borderColor='var(--border)'">
-      <div class="stat-value" style="color:var(--gray);">{{ stats.skipped }}</div>
-      <div class="stat-label">Skipped (low score)</div>
-    </div>
+  <a class="stat" href="/jobs">
+    <div class="stat-value" style="color:{{ 'var(--green)' if stats.replies else 'var(--text-mute)' }};">{{ stats.replies }}</div>
+    <div class="stat-label">Replies</div>
   </a>
-  <a href="/jobs" style="text-decoration:none;">
-    <div class="stat-card" style="cursor:pointer; transition:border-color .15s;" onmouseover="this.style.borderColor='var(--green)'" onmouseout="this.style.borderColor='var(--border)'">
-      <div class="stat-value" style="color:var(--green);">{{ stats.emails_sent }}</div>
-      <div class="stat-label">Emails Sent</div>
-    </div>
+  <a class="stat" href="/jobs?status=skipped">
+    <div class="stat-value" style="color:var(--text-mute);">{{ stats.skipped }}</div>
+    <div class="stat-label">Filtered out</div>
   </a>
 </div>
 
-<!-- Progress log -->
-<div id="progress-wrap" style="margin-bottom:1.5rem; display:none;">
+<!-- ══ Charts ══ -->
+<div class="grid grid-2" style="margin-bottom:var(--sp-4);">
   <div class="card">
-    <div class="card-title">🔄 Pipeline Running…</div>
-    <div id="progress-log"></div>
+    <div class="card-head"><div class="card-title">📈 Applications sent · last 14 days</div></div>
+    <div style="position:relative;height:170px;"><canvas id="send-chart"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-head"><div class="card-title">🗂 Jobs by source</div></div>
+    <div style="position:relative;height:170px;"><canvas id="board-chart"></canvas></div>
   </div>
 </div>
 
-<div style="display:grid; grid-template-columns: 1fr 1fr; gap:1.5rem; margin-bottom:1.5rem;">
+<!-- ══ CVs / Automation / Keys ══ -->
+<div class="grid grid-2" style="margin-bottom:var(--sp-4);">
 
-  <!-- CV Upload -->
   <div class="card">
-    <div class="card-title">📄 CV Input</div>
-    {% if cv_files %}
-      <div class="alert alert-success" style="margin-bottom:1rem;">
-        ✅ Active CV: <strong>{{ cv_files[0] }}</strong>
-        {% if cv_files|length > 1 %}
-          <br><span style="font-size:.75rem; color:var(--text-dim);">+ {{ cv_files|length - 1 }} more file(s) in input/</span>
-        {% endif %}
-      </div>
-    {% else %}
-      <div class="alert alert-error" style="margin-bottom:1rem;">
-        ⚠ No CV found. Upload one below before running the pipeline.
-      </div>
-    {% endif %}
-
-    <div class="upload-zone" id="upload-zone" onclick="document.getElementById('cv-input').click()">
-      <div style="font-size:2rem; margin-bottom:.5rem;">📂</div>
-      <div style="font-weight:600;">Drop your CV here or click to browse</div>
-      <div style="color:var(--text-dim); font-size:.8rem; margin-top:.25rem;">DOCX, PDF, or TXT</div>
+    <div class="card-head"><div class="card-title">📄 CV versions</div></div>
+    <div id="cv-list" class="stack" style="gap:var(--sp-2); margin-bottom:var(--sp-4);">
+      <div class="hint">Loading…</div>
     </div>
-    <input type="file" id="cv-input" accept=".docx,.pdf,.txt" style="display:none" onchange="uploadCV(this)">
-    <div id="upload-status" style="margin-top:.75rem; font-size:.85rem;"></div>
+    <div class="dropzone" id="dropzone" onclick="document.getElementById('cv-input').click()">
+      <div style="font-size:1.4rem;">＋</div>
+      <div style="font-weight:600;">Drop a CV or click to upload</div>
+      <div class="hint">PDF, DOCX or TXT · re-parsed automatically</div>
+    </div>
+    <input type="file" id="cv-input" accept=".docx,.pdf,.txt" class="hidden" onchange="uploadCV(this)">
+    <div id="cv-status" class="hint" style="margin-top:var(--sp-2);"></div>
   </div>
 
-  <!-- Config Summary -->
-  <div class="card">
-    <div class="card-title">⚙ Current Config</div>
-    <div style="display:flex; flex-direction:column; gap:.6rem; font-size:.85rem;">
-      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Roles:</span>
-        <span>{{ config.TARGET_ROLES[:3]|join(', ') }}{% if config.TARGET_ROLES|length > 3 %} +{{ config.TARGET_ROLES|length - 3 }} more{% endif %}</span></div>
-      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Min Score:</span> {{ config.MIN_MATCH_SCORE }}/100</div>
-      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Remote Only:</span> {{ '✓ Yes' if config.REMOTE_ONLY else '✗ No' }}</div>
-      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Sources:</span>
-        {% set sources = [] %}
-        {% if config.SCRAPE_LINKEDIN %}{% set _ = sources.append('LinkedIn') %}{% endif %}
-        {% if config.SCRAPE_INDEED %}{% set _ = sources.append('Indeed') %}{% endif %}
-        {% if config.SCRAPE_REMOTEOK %}{% set _ = sources.append('RemoteOK') %}{% endif %}
-        {% if config.SCRAPE_WEWORKREMOTELY %}{% set _ = sources.append('WWR') %}{% endif %}
-        {% if config.SCRAPE_GOOGLE %}{% set _ = sources.append('Google') %}{% endif %}
-        {{ sources|join(', ') }}</div>
-      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Max per board:</span> {{ config.MAX_JOBS_PER_BOARD }}</div>
-      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Model:</span> llama-3.3-70b-versatile</div>
-      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Groq Keys:</span>
-        <span style="color:{{ 'var(--green)' if config.GROQ_API_KEYS|length > 1 else 'var(--text)' }};">
-          {{ config.GROQ_API_KEYS|length }} key{{ 's' if config.GROQ_API_KEYS|length != 1 else '' }} loaded
-          {% if config.GROQ_API_KEYS|length > 1 %}✓ rotation active{% endif %}
-        </span>
-      </div>
-      <div><span style="color:var(--text-dim); width:130px; display:inline-block;">Proxy:</span>
-        <span style="color:{{ 'var(--green)' if config.PROXY_ENABLED and config.PROXY_LIST else 'var(--text-dim)' }};">
-          {% if config.PROXY_ENABLED and config.PROXY_LIST %}
-            ✓ {{ config.PROXY_LIST|length }} proxy{{ 'ies' if config.PROXY_LIST|length != 1 else '' }} loaded
-          {% elif config.PROXY_ENABLED %}
-            ⚠ Enabled but no proxies listed
-          {% else %}
-            Off (direct)
-          {% endif %}
-        </span>
-      </div>
-        <span style="color:{{ 'var(--green)' if config.GENERATE_DOCS_WITHOUT_HR else 'var(--yellow)' }};">
-          {{ '✓ Always generate' if config.GENERATE_DOCS_WITHOUT_HR else '⚠ HR contact required' }}
-        </span>
+  <div class="stack">
+    <div class="card">
+      <div class="card-head"><div class="card-title">⏰ Automation</div></div>
+      <div id="sched-body"><div class="hint">Loading…</div></div>
+      <hr class="sep">
+      <div class="row">
+        <button class="btn btn-ghost btn-sm" onclick="testTelegram()">🔔 Test Telegram</button>
+        <span id="tg-status" class="hint"></span>
       </div>
     </div>
-    <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid var(--border); font-size:.75rem; color:var(--text-dim);">
-      <a href="/settings" style="color:var(--accent); text-decoration:none; font-weight:600;">⚙ Edit all settings →</a>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">🔑 API keys</div>
+        <button class="btn btn-ghost btn-sm" onclick="loadKeys()">↻</button>
+      </div>
+      <div id="keys-body"><div class="hint">Loading…</div></div>
     </div>
   </div>
 </div>
 
-<!-- Analytics Charts -->
-<div style="display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; margin-bottom:1.5rem;" id="analytics-section">
-  <div class="card">
-    <div class="card-title">📈 Applications Sent (Last 14 Days)</div>
-    <canvas id="send-chart" height="160"></canvas>
+<!-- ══ Recent jobs ══ -->
+<div class="card card-pad-0" style="margin-bottom:var(--sp-4);">
+  <div class="spread" style="padding:var(--sp-4) var(--sp-5) 0;">
+    <div class="card-title">Recent jobs</div>
+    <a href="/jobs" class="btn btn-ghost btn-sm">View all →</a>
   </div>
-  <div class="card">
-    <div class="card-title">🗂 Jobs by Source</div>
-    <canvas id="board-chart" height="160"></canvas>
-  </div>
-</div>
-
-<!-- CV Version Manager + Scheduler Status -->
-<div style="display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; margin-bottom:1.5rem;">
-
-  <!-- Key Status -->
-  <div class="card" style="grid-column:1/-1;" id="key-status-card">
-    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:.75rem;">
-      <div class="card-title" style="margin-bottom:0;">🔑 API Key Status</div>
-      <button onclick="refreshKeyStatus()" style="font-size:.75rem; padding:.25rem .6rem; background:var(--surface2); border:1px solid var(--border); border-radius:4px; color:var(--fg); cursor:pointer;">↻ Refresh</button>
-    </div>
-    <div id="key-status-body" style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
-      <div style="text-align:center; padding:1rem; color:var(--gray); font-size:.85rem;">Loading…</div>
-    </div>
-  </div>
-
-  <!-- CV Versions -->
-  <div class="card">
-    <div class="card-title">📄 CV Versions</div>
-    <div id="cv-list" style="margin-bottom:1rem; font-size:.85rem; display:flex; flex-direction:column; gap:.5rem;">
-      <div style="color:var(--text-dim);">Loading…</div>
-    </div>
-    <div style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap;">
-      <label class="btn btn-secondary" style="cursor:pointer; font-size:.8rem;">
-        ＋ Upload CV
-        <input type="file" accept=".docx,.pdf,.txt" style="display:none" onchange="uploadCVVersion(this)">
-      </label>
-      <span id="cv-upload-status" style="font-size:.8rem; color:var(--text-dim);"></span>
-    </div>
-    <div style="margin-top:.75rem; font-size:.8rem; color:var(--text-dim);">
-      Active CV is used for all pipeline runs. Switch anytime without restarting.
-    </div>
-  </div>
-
-  <!-- Scheduler + Notifications -->
-  <div class="card">
-    <div class="card-title">⏰ Auto-Schedule & Notifications</div>
-    <div id="scheduler-status" style="margin-bottom:1rem; font-size:.85rem;">
-      <div style="color:var(--text-dim);">Loading…</div>
-    </div>
-    <div style="border-top:1px solid var(--border); padding-top:1rem; margin-top:.5rem;">
-      <div class="card-title" style="margin-bottom:.5rem;">🔔 Telegram</div>
-      <button class="btn btn-secondary" style="font-size:.8rem;" onclick="testTelegram()">Send Test Notification</button>
-      <div id="telegram-status" style="font-size:.8rem; color:var(--text-dim); margin-top:.5rem;"></div>
-      <div style="font-size:.75rem; color:var(--text-dim); margin-top:.5rem;">
-        Configure in <a href="/settings" style="color:var(--accent);">Settings</a> or .env
-      </div>
-    </div>
-  </div>
-
-</div>
-
-<!-- Recent Jobs -->
-<div class="card" style="margin-bottom:1.5rem;">
-  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1rem;">
-    <div class="card-title" style="margin-bottom:0;">Recent Jobs</div>
-    <a href="/jobs" class="btn btn-secondary" style="font-size:.8rem; padding:.35rem .75rem;">View All →</a>
-  </div>
-  <div class="table-wrap">
+  <div class="table-wrap" style="margin-top:var(--sp-3);">
     <table>
       <thead>
-        <tr>
-          <th>Score</th>
-          <th>Title</th>
-          <th>Company</th>
-          <th>Source</th>
-          <th>HR Contact</th>
-          <th>Status</th>
-          <th></th>
-        </tr>
+        <tr><th>Score</th><th>Role</th><th>Company</th><th>Source</th><th>Contact</th><th>Status</th><th></th></tr>
       </thead>
       <tbody>
         {% for job in jobs %}
         <tr>
           <td>
             {% if job.score %}
-              <div class="score-ring {{ 'score-high' if job.score >= 75 else 'score-mid' if job.score >= 50 else 'score-low' }}">
-                {{ job.score }}
-              </div>
-            {% else %}
-              <span style="color:var(--text-dim);">—</span>
-            {% endif %}
+              <div class="score {{ 'score-high' if job.score >= 75 else 'score-mid' if job.score >= 50 else 'score-low' }}">{{ job.score }}</div>
+            {% else %}<span class="td-dim">—</span>{% endif %}
           </td>
-          <td style="font-weight:600; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ job.title }}</td>
-          <td style="color:var(--text-dim);">{{ job.company }}</td>
-          <td><span class="badge badge-pending" style="font-size:.65rem;">{{ job.source }}</span></td>
+          <td class="td-strong truncate" title="{{ job.title }}">{{ job.title }}</td>
+          <td class="td-dim truncate" style="max-width:150px;">{{ job.company }}</td>
+          <td><span class="chip">{{ job.source }}</span></td>
           <td>
             {% if job.hr_name or job.hr_email %}
-              <span style="color:var(--green); font-size:.8rem;">✓ {{ job.hr_name or job.hr_email }}</span>
-            {% else %}
-              <span style="color:var(--text-dim); font-size:.8rem;">—</span>
-            {% endif %}
+              <span style="color:var(--green);font-size:var(--step--1);">✓ {{ job.hr_name or job.hr_email }}</span>
+            {% else %}<span class="td-dim">—</span>{% endif %}
           </td>
           <td><span class="badge badge-{{ job.status }}">{{ job.status }}</span></td>
-          <td><a href="/job/{{ job.id }}" class="btn btn-secondary" style="padding:.25rem .65rem; font-size:.75rem;">View</a></td>
+          <td><a href="/job/{{ job.id }}" class="btn btn-ghost btn-sm">View</a></td>
         </tr>
         {% else %}
-        <tr><td colspan="7" style="text-align:center; color:var(--text-dim); padding:2rem;">No jobs yet — run the pipeline to start.</td></tr>
+        <tr><td colspan="7" class="empty">No jobs yet — hit <strong>Run pipeline</strong> to start.</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
 </div>
 
-<!-- Recent Runs -->
-<div class="card">
-  <div class="card-title">📊 Recent Pipeline Runs</div>
-  <div class="table-wrap">
+<!-- ══ Runs ══ -->
+<div class="card card-pad-0">
+  <div style="padding:var(--sp-4) var(--sp-5) 0;"><div class="card-title">Recent runs</div></div>
+  <div class="table-wrap" style="margin-top:var(--sp-3);">
     <table>
-      <thead>
-        <tr><th>#</th><th>Started</th><th>Duration</th><th>Found</th><th>Qualified</th><th>Docs</th><th>Status</th></tr>
-      </thead>
+      <thead><tr><th>#</th><th>Started</th><th>Found</th><th>Qualified</th><th>Packages</th><th>Sent</th><th>Status</th></tr></thead>
       <tbody>
         {% for run in runs %}
         <tr>
-          <td style="color:var(--text-dim);">{{ run.id }}</td>
-          <td>{{ run.started_at[:16].replace('T',' ') if run.started_at else '—' }}</td>
-          <td style="color:var(--text-dim);">
-            {% if run.started_at and run.finished_at %}
-              —
-            {% else %}🔄{% endif %}
-          </td>
+          <td class="td-dim">{{ run.id }}</td>
+          <td class="mono">{{ run.started_at[:16].replace('T',' ') if run.started_at else '—' }}</td>
           <td>{{ run.jobs_found }}</td>
           <td>{{ run.jobs_scored }}</td>
-          <td style="color:var(--green); font-weight:600;">{{ run.docs_generated }}</td>
-          <td>
-            <span class="badge {{ 'badge-done' if run.status == 'done' else 'badge-pending' if run.status == 'running' else 'badge-skipped' }}">
-              {{ run.status }}
-            </span>
-          </td>
+          <td style="color:var(--green);font-weight:600;">{{ run.docs_generated }}</td>
+          <td>{{ run.emails_sent }}</td>
+          <td><span class="badge {{ 'badge-done' if run.status=='done' else 'badge-pending' if run.status=='running' else 'badge-error' }}">{{ run.status }}</span></td>
         </tr>
         {% else %}
-        <tr><td colspan="7" style="text-align:center; color:var(--text-dim); padding:1.5rem;">No runs yet.</td></tr>
+        <tr><td colspan="7" class="empty">No runs yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -280,396 +197,438 @@
 {% block scripts %}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script>
-let evtSource = null;
-let reconnectTimer = null;
-let reconnectAttempts = 0;
-const MAX_RECONNECT = 10;
-const RECONNECT_DELAY_MS = 3000;
+// ══════════════════════════════════════════════════════
+// Profile
+// ══════════════════════════════════════════════════════
+async function loadProfile() {
+  const body = document.getElementById('profile-body');
+  const src  = document.getElementById('profile-src');
+  try {
+    const p = await getJSON('/api/profile');
 
-// ── On page load: check if a run is already active and re-attach ──
-document.addEventListener('DOMContentLoaded', function () {
-  fetch('/api/status')
-    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-    .then(data => {
-      if (data.active) {
-        const btn  = document.getElementById('run-btn');
-        const wrap = document.getElementById('progress-wrap');
-        const log  = document.getElementById('progress-log');
-        btn.disabled    = true;
-        btn.textContent = '⏳ Running…';
-        wrap.style.display = 'block';
-        log.style.display  = 'block';
-        log.textContent = '🔄 Reconnected to running pipeline…\n';
-        _connectStream();
-      }
-    })
-    .catch(() => {});
-});
-
-function startRun() {
-  const btn  = document.getElementById('run-btn');
-  const log  = document.getElementById('progress-log');
-  const wrap = document.getElementById('progress-wrap');
-  btn.disabled    = true;
-  btn.textContent = '⏳ Running…';
-  log.textContent = '';
-  log.style.display  = 'block';
-  wrap.style.display = 'block';
-
-  fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
-    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-    .then(data => {
-      if (data.error) {
-        // Already running — just attach to the stream
-        if (data.error.includes('already in progress')) {
-          log.textContent = '🔄 Pipeline already running — attaching to log…\n';
-          _connectStream();
-          return;
-        }
-        log.textContent = '❌ ' + data.error;
-        _resetBtn();
-        return;
-      }
-      reconnectAttempts = 0;
-      _connectStream();
-    })
-    .catch(err => {
-      log.textContent = '❌ ' + err;
-      _resetBtn();
-    });
-}
-
-function _connectStream() {
-  if (evtSource) { evtSource.close(); evtSource = null; }
-  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-
-  const log = document.getElementById('progress-log');
-  evtSource = new EventSource('/stream');
-
-  evtSource.onopen = function () {
-    reconnectAttempts = 0;
-  };
-
-  evtSource.onmessage = function (e) {
-    const data = JSON.parse(e.data);
-    if (data.ping) return;          // keepalive — ignore
-    if (data.done) {
-      evtSource.close();
-      evtSource = null;
-      log.textContent += '\n✅ Done! Refreshing in 2s…';
-      log.scrollTop = log.scrollHeight;
-      setTimeout(() => location.reload(), 2000);
+    if (p.error) {
+      src.textContent = '';
+      body.innerHTML = `<div class="alert alert-warn"><span>⚠</span><div>${esc(p.error)}</div></div>`;
       return;
     }
-    if (data.message) {
-      log.textContent += data.message + '\n';
-      log.scrollTop = log.scrollHeight;
+    src.textContent = '· ' + p.source_file;
+
+    const blockers = (p.blockers || []).map(b =>
+      `<div class="alert alert-error"><span>⛔</span><div>${esc(b)}</div></div>`).join('');
+    const warnings = (p.warnings || []).map(w =>
+      `<div class="alert alert-warn"><span>⚠</span><div>${esc(w)}</div></div>`).join('');
+
+    const titles = (p.titles || []).map(t => `<span class="chip chip-on">${esc(t)}</span>`).join('');
+    const queries = (p.queries || []).map(q => `<span class="chip">${esc(q)}</span>`).join('');
+
+    const skills = Object.entries(p.skills_by_category || {}).map(([cat, list]) => `
+      <div style="margin-bottom:var(--sp-2);">
+        <div class="hint" style="margin-bottom:2px;">${esc(cat)}</div>
+        <div class="chip-list">${list.map(s => `<span class="chip">${esc(s)}</span>`).join('')}</div>
+      </div>`).join('');
+
+    const exp = (p.experience || []).map(e => `
+      <div class="spread" style="padding:var(--sp-2) 0;border-bottom:1px solid var(--border);">
+        <div>
+          <div class="td-strong">${esc(e.title)}</div>
+          <div class="hint">${esc(e.company)}</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="mono hint">${esc(e.period)}</div>
+          <div class="hint">${e.bullet_count} bullets</div>
+        </div>
+      </div>`).join('') || '<div class="hint">No experience parsed.</div>';
+
+    const certs = (p.certifications || []).length
+      ? `<div style="margin-top:var(--sp-3);">
+           <div class="hint" style="margin-bottom:2px;">Certifications</div>
+           <div class="chip-list">${p.certifications.map(c => `<span class="chip">${esc(c)}</span>`).join('')}</div>
+         </div>` : '';
+
+    body.innerHTML = `
+      ${blockers}${warnings}
+      <div class="profile-head" style="${blockers || warnings ? 'margin-top:var(--sp-4);' : ''}">
+        <div class="profile-id">
+          <div style="font-size:var(--step-2);font-weight:700;letter-spacing:-.02em;">${esc(p.name) || '—'}</div>
+          <div class="hint">${esc(p.email)}${p.phone ? ' · ' + esc(p.phone) : ''}</div>
+        </div>
+        <div>
+          <div class="stat-value" style="font-size:var(--step-2);">${esc(p.years_label) || '—'}</div>
+          <div class="stat-label">experience</div>
+        </div>
+        <div>
+          <div class="stat-value" style="font-size:var(--step-2);text-transform:capitalize;">${esc(p.seniority)}</div>
+          <div class="stat-label">seniority band</div>
+        </div>
+        <div>
+          <div class="stat-value" style="font-size:var(--step-2);">${p.skill_count}</div>
+          <div class="stat-label">skills matched</div>
+        </div>
+      </div>
+
+      <div class="grid grid-2">
+        <div>
+          <div class="hint" style="margin-bottom:var(--sp-2);">Roles you've held</div>
+          <div class="chip-list" style="margin-bottom:var(--sp-4);">${titles || '<span class="hint">none</span>'}</div>
+
+          <div class="hint" style="margin-bottom:var(--sp-2);">Searching job boards for</div>
+          <div class="chip-list">${queries || '<span class="hint">nothing</span>'}</div>
+
+          <div class="hint" style="margin-top:var(--sp-4);margin-bottom:var(--sp-2);">Experience</div>
+          ${exp}
+          ${certs}
+        </div>
+        <div>
+          <div class="hint" style="margin-bottom:var(--sp-2);">Skills read from your CV</div>
+          ${skills || '<span class="hint">none matched</span>'}
+        </div>
+      </div>
+
+      <hr class="sep">
+      <div class="hint">
+        All of this is read from your CV — nothing above is configured by hand.
+        Roles, seniority and skills drive what gets searched, scored and applied to.
+      </div>`;
+  } catch (e) {
+    body.innerHTML = `<div class="alert alert-error"><span>✕</span><div>Could not load profile: ${esc(e.message)}</div></div>`;
+  }
+}
+
+async function reparseProfile() {
+  const body = document.getElementById('profile-body');
+  body.innerHTML = '<div class="hint"><span class="spin">◜</span> Re-reading CV…</div>';
+  try { await postJSON('/api/profile/reparse'); } catch (e) {}
+  loadProfile();
+}
+
+// ══════════════════════════════════════════════════════
+// Pipeline run + SSE
+// ══════════════════════════════════════════════════════
+let es = null, attempts = 0;
+const MAX_ATTEMPTS = 10;
+
+function log(msg) {
+  const c = document.getElementById('console');
+  c.textContent += msg + '\n';
+  c.scrollTop = c.scrollHeight;
+}
+
+function showConsole(title) {
+  document.getElementById('console-title').textContent = title;
+  document.getElementById('console-card').classList.remove('hidden');
+  document.getElementById('live-pill').classList.remove('hidden');
+}
+
+function runningUI(on) {
+  const btn = document.getElementById('run-btn');
+  btn.disabled = on;
+  btn.innerHTML = on ? '<span class="spin">◜</span> Running…' : '▶ Run pipeline';
+  document.getElementById('live-pill').classList.toggle('hidden', !on);
+}
+
+async function startRun() {
+  runningUI(true);
+  document.getElementById('console').textContent = '';
+  showConsole('Pipeline running');
+  try {
+    const d = await postJSON('/run', {});
+    if (d.error && !d.error.includes('already in progress')) {
+      log('✕ ' + d.error); runningUI(false); return;
     }
+    if (d.error) log('↻ Already running — attaching to log…');
+    attempts = 0;
+    connect('/stream');
+  } catch (e) {
+    log('✕ ' + e.message); runningUI(false);
+  }
+}
+
+async function startFollowup() {
+  const btn = document.getElementById('followup-btn');
+  btn.disabled = true;
+  document.getElementById('console').textContent = '';
+  showConsole('Follow-up cycle running');
+  try {
+    const d = await postJSON('/api/followup/run', {});
+    if (d.error) { log('✕ ' + d.error); btn.disabled = false; return; }
+    connect('/api/followup/stream', () => { btn.disabled = false; });
+  } catch (e) { log('✕ ' + e.message); btn.disabled = false; }
+}
+
+function connect(url, onDone) {
+  if (es) { es.close(); es = null; }
+  es = new EventSource(url);
+
+  es.onopen = () => { attempts = 0; };
+
+  es.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    if (d.ping) return;
+    if (d.done) {
+      es.close(); es = null;
+      log('\n✅ Finished — refreshing…');
+      if (onDone) onDone();
+      setTimeout(() => location.reload(), 1500);
+      return;
+    }
+    if (d.message) log(d.message);
   };
 
-  evtSource.onerror = function () {
-    evtSource.close();
-    evtSource = null;
-
-    // Check if the run is genuinely still active before reconnecting
-    fetch('/api/status')
-      .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-      .then(status => {
-        if (!status.active) {
-          // Run finished while we were disconnected
-          const log = document.getElementById('progress-log');
-          log.textContent += '\n⚠ Connection lost — pipeline may have finished. Refreshing…';
-          log.scrollTop = log.scrollHeight;
-          setTimeout(() => location.reload(), 2000);
-          return;
-        }
-        // Still running — schedule a reconnect with back-off
-        if (reconnectAttempts < MAX_RECONNECT) {
-          reconnectAttempts++;
-          const delay = RECONNECT_DELAY_MS * reconnectAttempts;
-          const log = document.getElementById('progress-log');
-          log.textContent += `\n⚡ Connection dropped — reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts}/${MAX_RECONNECT})…\n`;
-          log.scrollTop = log.scrollHeight;
-          reconnectTimer = setTimeout(_connectStream, delay);
-        } else {
-          const log = document.getElementById('progress-log');
-          log.textContent += '\n❌ Could not reconnect after multiple attempts. The pipeline is still running in the background — refresh the page to check progress.';
-          log.scrollTop = log.scrollHeight;
-          _resetBtn();
-        }
-      })
-      .catch(() => {
-        // Can't even reach the server — stop trying
-        _resetBtn();
-      });
+  es.onerror = async () => {
+    es.close(); es = null;
+    // Only reconnect if the run is genuinely still going.
+    try {
+      const s = await getJSON('/api/status');
+      if (!s.active && !s.followup_active) {
+        log('\n⚠ Stream closed — run may have finished. Refreshing…');
+        setTimeout(() => location.reload(), 1500);
+        return;
+      }
+      if (attempts < MAX_ATTEMPTS) {
+        attempts++;
+        const delay = 3000 * attempts;
+        log(`⚡ Connection dropped — retrying in ${delay / 1000}s (${attempts}/${MAX_ATTEMPTS})…`);
+        setTimeout(() => connect(url, onDone), delay);
+      } else {
+        log('✕ Could not reconnect. The run continues in the background — refresh to check.');
+        runningUI(false);
+      }
+    } catch { runningUI(false); }
   };
 }
 
-function _resetBtn() {
-  const btn = document.getElementById('run-btn');
-  btn.disabled    = false;
-  btn.textContent = '▶ Run Pipeline';
+// ══════════════════════════════════════════════════════
+// CV versions
+// ══════════════════════════════════════════════════════
+async function loadCVs() {
+  const el = document.getElementById('cv-list');
+  try {
+    const d = await getJSON('/api/cv/list');
+    if (!d.files || !d.files.length) {
+      el.innerHTML = '<div class="hint">No CVs in input/ yet.</div>';
+      return;
+    }
+    el.innerHTML = d.files.map(f => `
+      <div class="spread" style="padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);
+           background:${f.active ? 'var(--accent-dim)' : 'var(--surface-2)'};
+           border:1px solid ${f.active ? 'var(--accent)' : 'var(--border)'};">
+        <div style="min-width:0;">
+          <div class="td-strong truncate">${esc(f.filename)}
+            ${f.active ? '<span class="badge badge-ok" style="margin-left:var(--sp-2);">active</span>' : ''}</div>
+          <div class="hint">${f.size_kb} KB · ${esc(f.modified)}</div>
+        </div>
+        <div class="row" style="gap:var(--sp-1);">
+          ${f.active ? '' : `<button class="btn btn-ghost btn-sm" onclick="useCV('${esc(f.filename)}')">Use</button>`}
+          <button class="btn btn-danger btn-sm" onclick="delCV('${esc(f.filename)}')">✕</button>
+        </div>
+      </div>`).join('');
+  } catch { el.innerHTML = '<div class="hint">Failed to load.</div>'; }
+}
+
+async function useCV(filename) {
+  await postJSON('/api/cv/set-active', { filename });
+  await loadCVs();
+  loadProfile();   // a different CV means a different profile
+}
+
+async function delCV(filename) {
+  if (!confirm(`Delete ${filename}?`)) return;
+  await postJSON('/api/cv/delete', { filename });
+  await loadCVs();
+  loadProfile();
 }
 
 function uploadCV(input) {
   const file = input.files[0];
   if (!file) return;
-  const status = document.getElementById('upload-status');
-  status.innerHTML = '⏳ Uploading…';
+  const s = document.getElementById('cv-status');
+  s.innerHTML = '<span class="spin">◜</span> Uploading…';
   const fd = new FormData();
   fd.append('cv', file);
   fetch('/upload-cv', { method: 'POST', body: fd })
-    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-    .then(data => {
-      if (data.error) {
-        status.innerHTML = `<span style="color:var(--red)">❌ ${data.error}</span>`;
-      } else {
-        status.innerHTML = `<span style="color:var(--green)">✅ Uploaded: ${data.filename}</span>`;
-        setTimeout(() => location.reload(), 1000);
-      }
-    })
-    .catch(err => {
-      status.innerHTML = `<span style="color:var(--red)">❌ ${err}</span>`;
-    });
-}
-
-// ── Analytics Charts ──────────────────────────────────────────
-function loadCharts() {
-  fetch('/api/analytics')
-    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-    .then(data => {
-      // Send trend chart
-      const trend = data.send_trend || [];
-      const sendCtx = document.getElementById('send-chart');
-      if (sendCtx && trend.length) {
-        new Chart(sendCtx, {
-          type: 'bar',
-          data: {
-            labels: trend.map(t => t.day ? t.day.slice(5) : ''),
-            datasets: [{
-              label: 'Sent',
-              data: trend.map(t => t.count),
-              backgroundColor: 'rgba(26,86,219,0.7)',
-              borderRadius: 4,
-            }]
-          },
-          options: {
-            plugins: { legend: { display: false } },
-            scales: {
-              x: { ticks: { color: '#9ca3af', font: { size: 11 } }, grid: { color: '#2a2d3e' } },
-              y: { ticks: { color: '#9ca3af', font: { size: 11 } }, grid: { color: '#2a2d3e' }, beginAtZero: true }
-            }
-          }
-        });
-      } else if (sendCtx) {
-        sendCtx.parentElement.innerHTML += '<div style="color:var(--text-dim);font-size:.8rem;text-align:center;padding:2rem 0;">No emails sent yet</div>';
-      }
-
-      // Board breakdown chart
-      const boards = data.by_board || {};
-      const boardCtx = document.getElementById('board-chart');
-      if (boardCtx && Object.keys(boards).length) {
-        const colours = ['#1a56db','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#84cc16','#f97316'];
-        new Chart(boardCtx, {
-          type: 'doughnut',
-          data: {
-            labels: Object.keys(boards),
-            datasets: [{ data: Object.values(boards), backgroundColor: colours, borderWidth: 0 }]
-          },
-          options: {
-            plugins: {
-              legend: { position: 'right', labels: { color: '#e5e7eb', font: { size: 11 }, boxWidth: 12 } }
-            },
-            cutout: '60%'
-          }
-        });
-      } else if (boardCtx) {
-        boardCtx.parentElement.innerHTML += '<div style="color:var(--text-dim);font-size:.8rem;text-align:center;padding:2rem 0;">No jobs yet</div>';
-      }
-    })
-    .catch(() => {});
-}
-
-// ── CV Version Manager ─────────────────────────────────────
-function loadCVList() {
-  fetch('/api/cv/list')
-    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-    .then(data => {
-      const el = document.getElementById('cv-list');
-      if (!data.files || !data.files.length) {
-        el.innerHTML = '<div style="color:var(--text-dim);">No CV files found in input/</div>';
-        return;
-      }
-      el.innerHTML = data.files.map(f => `
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:.5rem;
-                    padding:.5rem .75rem; border-radius:6px;
-                    background:${f.active ? 'rgba(26,86,219,.15)' : 'rgba(255,255,255,.03)'};
-                    border:1px solid ${f.active ? 'var(--accent)' : 'var(--border)'};">
-          <div>
-            <span style="font-weight:600;">${f.filename}</span>
-            <span style="color:var(--text-dim); margin-left:.5rem; font-size:.75rem;">${f.size_kb} KB · ${f.modified}</span>
-            ${f.active ? '<span style="margin-left:.5rem; color:var(--green); font-size:.75rem;">✓ Active</span>' : ''}
-          </div>
-          <div style="display:flex; gap:.35rem;">
-            ${!f.active ? `<button class="btn btn-secondary" style="font-size:.7rem; padding:.2rem .6rem;"
-              onclick="setCVActive('${f.filename}')">Use</button>` : ''}
-            <button class="btn btn-danger" style="font-size:.7rem; padding:.2rem .6rem;"
-              onclick="deleteCV('${f.filename}')">✕</button>
-          </div>
-        </div>
-      `).join('');
-    })
-    .catch(() => {});
-}
-
-function setCVActive(filename) {
-  fetch('/api/cv/set-active', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({filename}) })
-    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-    .then(() => loadCVList())
-    .catch(() => loadCVList());
-}
-
-function deleteCV(filename) {
-  if (!confirm(`Delete ${filename}?`)) return;
-  fetch('/api/cv/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({filename}) })
-    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-    .then(() => loadCVList())
-    .catch(() => loadCVList());
-}
-
-function uploadCVVersion(input) {
-  const file = input.files[0];
-  if (!file) return;
-  const status = document.getElementById('cv-upload-status');
-  status.textContent = '⏳ Uploading…';
-  const fd = new FormData();
-  fd.append('cv', file);
-  fetch('/upload-cv', { method: 'POST', body: fd })
-    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-    .then(data => {
-      if (data.error) {
-        status.textContent = '❌ ' + data.error;
-      } else {
-        status.textContent = '✅ Uploaded';
-        loadCVList();
-        setTimeout(() => { status.textContent = ''; }, 3000);
-      }
-    })
-    .catch(err => {
-      status.textContent = '❌ ' + err;
-    });
-}
-
-// ── Scheduler Status ────────────────────────────────────────
-function loadSchedulerStatus() {
-  fetch('/api/scheduler/status')
-    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-    .then(data => {
-      const el = document.getElementById('scheduler-status');
-      const dot = data.enabled ? '🟢' : '⚪';
-      const nextRun = data.next_run
-        ? `<div style="margin-top:.35rem; color:var(--text-dim); font-size:.8rem;">Next run: ${data.next_run}</div>`
-        : '';
-      el.innerHTML = `
-        <div>${dot} <strong>${data.enabled ? 'Enabled' : 'Disabled'}</strong></div>
-        <div style="color:var(--text-dim); font-size:.8rem; margin-top:.25rem;">
-          Schedule: <code style="background:var(--border); padding:.1rem .35rem; border-radius:4px;">${data.cron || '—'}</code>
-        </div>
-        ${nextRun}
-        <div style="margin-top:.5rem; font-size:.75rem; color:var(--text-dim);">
-          ${data.enabled ? 'Pipeline runs automatically on schedule. ' : 'Set SCHEDULE_ENABLED=true in '}
-          <a href="/settings" style="color:var(--accent);">${data.enabled ? 'Edit in Settings →' : '.env or Settings →'}</a>
-        </div>
-      `;
-    })
-    .catch(() => {});
-}
-
-// ── Telegram Test ────────────────────────────────────────────
-function testTelegram() {
-  const status = document.getElementById('telegram-status');
-  status.textContent = '⏳ Sending…';
-  fetch('/api/notify/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
-    .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-    .then(data => {
-      status.textContent = data.message;
-      status.style.color = data.success ? 'var(--green)' : 'var(--red)';
-    })
-    .catch(() => { status.textContent = '❌ Request failed'; });
-}
-
-// ── Page init ────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', function() {
-  loadCharts();
-  loadCVList();
-  loadSchedulerStatus();
-  refreshKeyStatus();
-});
-
-// ── Key Status ───────────────────────────────────────────────
-function refreshKeyStatus() {
-  fetch('/api/keys/status')
     .then(r => r.json())
-    .then(data => {
-      const body = document.getElementById('key-status-body');
-      body.innerHTML = renderKeyPanel('Groq', data.groq, 'rate_limited', '⏱ Recovers in') +
-                       renderKeyPanel('Hunter.io', data.hunter, 'exhausted', '🚫 Quota used up this session');
+    .then(d => {
+      if (d.error) { s.innerHTML = `<span style="color:var(--red)">✕ ${esc(d.error)}</span>`; return; }
+      s.innerHTML = `<span style="color:var(--green)">✓ ${esc(d.filename)} uploaded</span>`;
+      loadCVs(); loadProfile();
+      setTimeout(() => { s.textContent = ''; }, 4000);
     })
-    .catch(() => {
-      document.getElementById('key-status-body').innerHTML =
-        '<div style="color:var(--red);font-size:.85rem;">Failed to load key status.</div>';
-    });
+    .catch(e => { s.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>`; });
 }
 
-function renderKeyPanel(label, group, badStatus, badLabel) {
-  const allOk  = group.keys.every(k => k.status === 'ok');
-  const badge  = allOk
-    ? `<span style="background:#1a3a1a;color:#4caf50;padding:.15rem .45rem;border-radius:4px;font-size:.72rem;font-weight:600;">ALL OK</span>`
-    : `<span style="background:#3a1a1a;color:#f44336;padding:.15rem .45rem;border-radius:4px;font-size:.72rem;font-weight:600;">${group.keys.filter(k=>k.status!=='ok').length} ISSUE${group.keys.filter(k=>k.status!=='ok').length>1?'S':''}</span>`;
+// ══════════════════════════════════════════════════════
+// Scheduler / Telegram / Keys
+// ══════════════════════════════════════════════════════
+async function loadScheduler() {
+  const el = document.getElementById('sched-body');
+  try {
+    const d = await getJSON('/api/scheduler/status');
+    el.innerHTML = `
+      <div class="row" style="margin-bottom:var(--sp-2);">
+        <span class="dot ${d.enabled ? 'dot-ok' : 'dot-off'}"></span>
+        <strong>${d.enabled ? 'Scheduled' : 'Manual only'}</strong>
+        <code class="chip">${esc(d.cron || '—')}</code>
+      </div>
+      ${d.next_run ? `<div class="hint">Next run: ${esc(d.next_run)}</div>` : ''}
+      <div class="hint" style="margin-top:var(--sp-2);">
+        ${d.enabled ? 'Runs automatically — nothing to do.' : 'Enable SCHEDULE_ENABLED in <a href="/settings">Settings</a> for full autonomy.'}
+      </div>`;
+  } catch { el.innerHTML = '<div class="hint">Failed to load.</div>'; }
+}
+
+async function testTelegram() {
+  const s = document.getElementById('tg-status');
+  s.innerHTML = '<span class="spin">◜</span> Sending…';
+  try {
+    const d = await postJSON('/api/notify/test');
+    s.innerHTML = `<span style="color:${d.success ? 'var(--green)' : 'var(--red)'}">${esc(d.message)}</span>`;
+  } catch { s.textContent = '✕ Request failed'; }
+}
+
+async function loadKeys() {
+  const el = document.getElementById('keys-body');
+  try {
+    const d = await getJSON('/api/keys/status');
+    el.innerHTML = [
+      keyPanel('Groq', d.groq, 'recovers in'),
+      keyPanel('Hunter.io', d.hunter, 'quota spent'),
+    ].join('<hr class="sep">');
+  } catch { el.innerHTML = '<div class="hint">Failed to load.</div>'; }
+}
+
+function keyPanel(label, group, badNote) {
+  if (!group || !group.total) {
+    return `<div class="spread"><span class="td-strong">${label}</span>
+            <span class="badge badge-mute">none configured</span></div>`;
+  }
+  const bad = group.keys.filter(k => k.status !== 'ok').length;
+  const badge = bad
+    ? `<span class="badge badge-warn">${bad} limited</span>`
+    : `<span class="badge badge-ok">all ok</span>`;
 
   const rows = group.keys.map(k => {
-    const ok  = k.status === 'ok';
-    const dot = ok ? '🟢' : '🔴';
-    let detail = '';
+    const ok = k.status === 'ok';
+    let note = '';
     if (!ok && k.recovers_in != null) {
       const m = Math.floor(k.recovers_in / 60), s = k.recovers_in % 60;
-      detail = `<span style="color:var(--yellow);font-size:.75rem;"> — recovers in ${m>0?m+'m ':''}${s}s</span>`;
+      note = `<span class="hint" style="color:var(--yellow);">${badNote} ${m ? m + 'm ' : ''}${s}s</span>`;
     } else if (!ok) {
-      detail = `<span style="color:var(--red);font-size:.75rem;"> — ${badLabel}</span>`;
+      note = `<span class="hint" style="color:var(--red);">${badNote}</span>`;
     }
-    return `<div style="display:flex;align-items:center;gap:.4rem;padding:.3rem 0;border-bottom:1px solid var(--border);font-size:.82rem;">
-      <span>${dot}</span>
-      <span style="font-family:monospace;color:var(--fg-dim);">Key #${k.index}</span>
-      <span style="font-family:monospace;font-size:.75rem;color:var(--gray);">${k.key_hint}</span>
-      ${detail}
+    return `<div class="row" style="gap:var(--sp-2);padding:3px 0;">
+      <span class="dot ${ok ? 'dot-ok' : 'dot-bad'}"></span>
+      <span class="mono hint">#${k.index} ${esc(k.key_hint)}</span>${note}
     </div>`;
   }).join('');
 
-  return `<div>
-    <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem;">
-      <span style="font-weight:600;font-size:.9rem;">${label}</span>
-      ${badge}
-      <span style="font-size:.75rem;color:var(--gray);">${group.ok}/${group.total} available</span>
-    </div>
-    ${rows || '<div style="font-size:.8rem;color:var(--gray);">No keys configured</div>'}
-  </div>`;
+  return `<div class="spread" style="margin-bottom:var(--sp-2);">
+      <span class="td-strong">${label}</span>
+      <div class="row" style="gap:var(--sp-2);">${badge}
+        <span class="hint">${group.keys.length} key${group.keys.length === 1 ? '' : 's'} rotating</span></div>
+    </div>${rows}`;
 }
 
-// Drag-and-drop
-const zone = document.getElementById('upload-zone');
-zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
-zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
-zone.addEventListener('drop', e => {
-  e.preventDefault();
-  zone.classList.remove('dragover');
-  const file = e.dataTransfer.files[0];
-  if (file) {
+// ══════════════════════════════════════════════════════
+// Charts
+// ══════════════════════════════════════════════════════
+let charts = [];
+
+function chartColors() {
+  const css = getComputedStyle(document.documentElement);
+  return {
+    grid: css.getPropertyValue('--border').trim(),
+    text: css.getPropertyValue('--text-dim').trim(),
+    accent: css.getPropertyValue('--accent').trim(),
+  };
+}
+
+async function loadCharts() {
+  charts.forEach(c => c.destroy());
+  charts = [];
+  const c = chartColors();
+  let d;
+  try { d = await getJSON('/api/analytics'); } catch { return; }
+
+  const axis = {
+    x: { ticks: { color: c.text, font: { size: 11 } }, grid: { color: c.grid } },
+    y: { ticks: { color: c.text, font: { size: 11 }, precision: 0 }, grid: { color: c.grid }, beginAtZero: true },
+  };
+
+  const trend = d.send_trend || [];
+  const sendEl = document.getElementById('send-chart');
+  if (sendEl) {
+    if (trend.length) {
+      charts.push(new Chart(sendEl, {
+        type: 'bar',
+        data: {
+          labels: trend.map(t => (t.day || '').slice(5)),
+          datasets: [{ data: trend.map(t => t.count), backgroundColor: c.accent, borderRadius: 5 }],
+        },
+        options: { maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: axis },
+      }));
+    } else {
+      sendEl.parentElement.innerHTML = '<div class="empty">No applications sent yet</div>';
+    }
+  }
+
+  const boards = d.by_board || {};
+  const boardEl = document.getElementById('board-chart');
+  if (boardEl) {
+    const keys = Object.keys(boards);
+    if (keys.length) {
+      charts.push(new Chart(boardEl, {
+        type: 'doughnut',
+        data: {
+          labels: keys,
+          datasets: [{
+            data: Object.values(boards),
+            backgroundColor: ['#4d7cfe', '#34d399', '#fbbf24', '#f87171', '#a78bfa', '#22d3ee', '#f472b6', '#a3e635', '#fb923c'],
+            borderWidth: 0,
+          }],
+        },
+        options: {
+          maintainAspectRatio: false, cutout: '62%',
+          plugins: { legend: { position: 'right', labels: { color: c.text, font: { size: 11 }, boxWidth: 10, padding: 10 } } },
+        },
+      }));
+    } else {
+      boardEl.parentElement.innerHTML = '<div class="empty">No jobs yet</div>';
+    }
+  }
+}
+
+// Charts bake in colours at construction, so rebuild them on theme change.
+document.addEventListener('themechange', loadCharts);
+
+// ══════════════════════════════════════════════════════
+// Init
+// ══════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', async () => {
+  loadProfile(); loadCVs(); loadScheduler(); loadKeys(); loadCharts();
+
+  // Re-attach to a run that was already going when the page loaded.
+  try {
+    const s = await getJSON('/api/status');
+    if (s.active) {
+      runningUI(true);
+      showConsole('Pipeline running');
+      log('↻ Re-attached to running pipeline…');
+      connect('/stream');
+    }
+  } catch {}
+
+  const dz = document.getElementById('dropzone');
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('over');
+    const f = e.dataTransfer.files[0];
+    if (!f) return;
     const input = document.getElementById('cv-input');
-    const dt = new DataTransfer();
-    dt.items.add(file);
+    const dt = new DataTransfer(); dt.items.add(f);
     input.files = dt.files;
     uploadCV(input);
-  }
+  });
 });
 </script>
 {% endblock %}

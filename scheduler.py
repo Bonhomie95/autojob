@@ -209,8 +209,12 @@ def start_scheduler():
             f"timezone: {tz} | next run: {next_run}"
         )
 
-        # Check for a missed run while the app was down
-        _check_catchup(cron_kwargs, tz)
+        # NOTE: catch-up-on-boot is intentionally disabled. Starting/restarting
+        # the app from the terminal (e.g. after a code change) should never
+        # silently kick off a pipeline run — only the cron tick or an explicit
+        # dashboard "Run" click should start one. Re-enable by uncommenting
+        # the line below if you actually want missed runs to fire on boot.
+        # _check_catchup(cron_kwargs, tz)
 
 
 def stop_scheduler():
@@ -225,6 +229,24 @@ def stop_scheduler():
 def trigger_now():
     """Manually fire the pipeline outside of the cron schedule."""
     _run_pipeline_in_thread(reason="manual")
+
+
+def is_pipeline_running() -> bool:
+    """
+    Shared check so the dashboard's /run endpoint and the cron/catch-up
+    scheduler never start overlapping pipeline runs (concurrent runs corrupt
+    each other's scraping/dedup and can stall contact extraction).
+    """
+    with _pipeline_lock:
+        return _pipeline_running
+
+
+def mark_pipeline_running(value: bool):
+    """Let external callers (e.g. app.py's dashboard run) register that a
+    pipeline is in flight, so the scheduler's own guard also sees it."""
+    global _pipeline_running
+    with _pipeline_lock:
+        _pipeline_running = value
 
 
 def get_next_run() -> str | None:

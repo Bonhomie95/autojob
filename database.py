@@ -1,5 +1,6 @@
 import sqlite3
 import hashlib
+import json
 from datetime import datetime
 from config import config
 
@@ -56,6 +57,26 @@ def init_db():
                 follow_ups_sent INTEGER DEFAULT 0,
                 status         TEXT DEFAULT 'running'
             );
+
+            CREATE TABLE IF NOT EXISTS cv_profiles (
+                cv_hash    TEXT PRIMARY KEY,
+                filename   TEXT,
+                profile    TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Document-frequency counts over scraped job descriptions.
+            -- Feeds IDF weighting in the scorer so common boilerplate words
+            -- ("team", "agile") count for less than rare stack terms.
+            CREATE TABLE IF NOT EXISTS token_df (
+                token TEXT PRIMARY KEY,
+                df    INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS corpus_meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            );
             """
         )
         # Migrate existing DB — add columns that may not exist yet
@@ -85,6 +106,73 @@ def init_db():
 
 def make_job_id(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()
+
+
+# ──────────────────────────────────────────────────────────
+# CV profile cache
+# ──────────────────────────────────────────────────────────
+
+def load_cv_profile(cv_hash: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT profile FROM cv_profiles WHERE cv_hash = ?", (cv_hash,)
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row["profile"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def save_cv_profile(cv_hash: str, filename: str, profile: dict):
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO cv_profiles (cv_hash, filename, profile)
+               VALUES (?, ?, ?)""",
+            (cv_hash, filename, json.dumps(profile)),
+        )
+
+
+def list_cv_profiles() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT cv_hash, filename, created_at FROM cv_profiles "
+            "ORDER BY created_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ──────────────────────────────────────────────────────────
+# IDF corpus
+# ──────────────────────────────────────────────────────────
+
+def bump_token_df(tokens: set[str]):
+    """Record that one more document contained each of these tokens."""
+    if not tokens:
+        return
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT INTO token_df (token, df) VALUES (?, 1)
+               ON CONFLICT(token) DO UPDATE SET df = df + 1""",
+            [(t,) for t in tokens],
+        )
+        conn.execute(
+            """INSERT INTO corpus_meta (key, value) VALUES ('doc_count', '1')
+               ON CONFLICT(key) DO UPDATE SET value = CAST(
+                   CAST(value AS INTEGER) + 1 AS TEXT)"""
+        )
+
+
+def load_token_df() -> tuple[dict[str, int], int]:
+    """Return ({token: document frequency}, total documents seen)."""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT token, df FROM token_df").fetchall()
+        meta = conn.execute(
+            "SELECT value FROM corpus_meta WHERE key = 'doc_count'"
+        ).fetchone()
+    total = int(meta["value"]) if meta else 0
+    return {r["token"]: r["df"] for r in rows}, total
 
 
 def job_exists(url: str) -> bool:
@@ -194,6 +282,19 @@ def email_already_sent_to(email: str, within_days: int = 30) -> bool:
             (email, email, within_days),
         ).fetchone()
     return row is not None
+
+
+def emails_sent_today() -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM jobs
+            WHERE email_status = 'sent'
+              AND email_sent_at IS NOT NULL
+              AND date(email_sent_at) = date('now')
+            """
+        ).fetchone()
+    return int(row[0] if row else 0)
 
 
 def get_jobs_by_email(email: str) -> list[dict]:

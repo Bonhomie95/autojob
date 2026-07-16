@@ -14,6 +14,21 @@ settings_bp = Blueprint("settings", __name__)
 
 ENV_PATH = Path(".env")
 
+
+def _active_profile() -> dict:
+    """
+    The parsed profile for whichever CV is currently active. Cached by file
+    hash, so calling this from a request handler is cheap.
+    """
+    try:
+        from pipeline import _find_cv
+        from core.cv_profile import get_profile
+
+        cv_path = _find_cv()
+        return get_profile(cv_path) if cv_path else {}
+    except Exception:  # a broken CV must not take the settings page down
+        return {}
+
 # ── Fields shown in the UI (ordered by section) ───────────────────────────────
 # Format: (env_key, label, field_type, section, hint)
 # field_type: "text" | "bool" | "number" | "textarea" | "select"
@@ -81,78 +96,13 @@ SETTINGS_FIELDS = [
         'Format: {"ProjectName":"https://github.com/you/repo","AnotherProject":"https://live-demo.com"} '
         "Leave blank to use auto-fetched GitHub URLs.",
     ),
-    (
-        "CANDIDATE_PROJECTS",
-        "Project Names",
-        "textarea",
-        "Candidate Info",
-        "Comma-separated list of your exact project names — overrides auto-detection from CV. "
-        "Leave blank to auto-detect. Example: PulseQuiz,Property Wey International,AI Trader",
-    ),
-    # ── Education (up to 5 entries)
-    (
-        "CANDIDATE_EDUCATION_1",
-        "Education 1",
-        "text",
-        "Education",
-        "Format: Degree | Institution | Year(s)  e.g. BSc, Computer Science | Lagos State University | 2018–2023",
-    ),
-    (
-        "CANDIDATE_EDUCATION_2",
-        "Education 2",
-        "text",
-        "Education",
-        "Same format — leave blank if not needed",
-    ),
-    (
-        "CANDIDATE_EDUCATION_3",
-        "Education 3",
-        "text",
-        "Education",
-        "Same format — leave blank if not needed",
-    ),
-    (
-        "CANDIDATE_EDUCATION_4",
-        "Education 4",
-        "text",
-        "Education",
-        "Same format — leave blank if not needed",
-    ),
-    (
-        "CANDIDATE_EDUCATION_5",
-        "Education 5",
-        "text",
-        "Education",
-        "Same format — leave blank if not needed",
-    ),
     # ── Target Roles
-    (
-        "TARGET_ROLES",
-        "Target Roles",
-        "textarea",
-        "Job Targeting",
-        "Comma-separated list of job titles to search for",
-    ),
-    (
-        "KEYWORDS",
-        "Match Keywords",
-        "textarea",
-        "Job Targeting",
-        "Comma-separated keywords that should match in job descriptions",
-    ),
     (
         "BLACKLIST_KEYWORDS",
         "Blacklist Keywords",
         "textarea",
         "Job Targeting",
         "Jobs containing these keywords are auto-skipped (comma-separated)",
-    ),
-    (
-        "EXPERIENCE_LEVEL",
-        "Experience Level",
-        "text",
-        "Job Targeting",
-        "Comma-separated: junior, mid, senior",
     ),
     # ── Salary
     (
@@ -162,8 +112,6 @@ SETTINGS_FIELDS = [
         "Salary",
         "Minimum acceptable salary (where listed)",
     ),
-    ("MAX_SALARY", "Max Salary", "number", "Salary", "Maximum salary range"),
-    ("SALARY_CURRENCY", "Currency", "text", "Salary", "e.g. USD, GBP, EUR"),
     # ── Location
     ("REMOTE_ONLY", "Remote Only", "bool", "Location", "Only show remote jobs"),
     (
@@ -240,6 +188,27 @@ SETTINGS_FIELDS = [
         "Groq score threshold (0–100) — jobs below this are skipped",
     ),
     (
+        "LLM_SCORING",
+        "Use AI Scoring",
+        "bool",
+        "Scoring & Documents",
+        "Off by default to save tokens. When off, AutoJob uses keyword scoring and reserves AI for document generation/fallbacks.",
+    ),
+    (
+        "CONTACT_SEARCH_ENABLED",
+        "Search Leads",
+        "bool",
+        "Scoring & Documents",
+        "Use headless Chromium/search engines to discover recruiter or careers emails when APIs do not return a lead.",
+    ),
+    (
+        "CONTACT_AI_FALLBACK",
+        "AI Contact Fallback",
+        "bool",
+        "Scoring & Documents",
+        "Use AI only as a last resort to parse contact info explicitly present in the posting.",
+    ),
+    (
         "GENERATE_DOCS_WITHOUT_HR",
         "Generate Docs Without HR Contact",
         "bool",
@@ -300,7 +269,7 @@ SETTINGS_FIELDS = [
         "SMTP Username",
         "text",
         "Email (SMTP)",
-        "Your full email address: adeyemibabatundejoseph@gmail.com",
+        "SMTP username for a generic fallback sender. Leave blank when using MailerSend/SMTP2GO.",
     ),
     (
         "SMTP_FROM",
@@ -345,6 +314,20 @@ SETTINGS_FIELDS = [
         "Email (SMTP)",
         "How many times to retry a failed send before giving up (0 = no retries)",
     ),
+    (
+        "SMTP_REPLY_TO",
+        "Reply-To",
+        "text",
+        "Email (SMTP)",
+        "Replies go here even when sending through MailerSend, SMTP2GO, or another sender.",
+    ),
+    (
+        "EMAIL_DAILY_LIMIT",
+        "Daily Send Limit",
+        "number",
+        "Email (SMTP)",
+        "Hard daily cap across all senders. Set 0 to disable.",
+    ),
 ]
 
 # Password is handled separately — never shown, only updated if non-blank is submitted
@@ -354,10 +337,19 @@ SMTP_PASSWORD_KEY = "SMTP_PASSWORD"
 HIDDEN_KEYS = {
     "GROQ_API_KEY",
     "HUNTER_API_KEY",
-    "LINKEDIN_EMAIL",
-    "LINKEDIN_PASSWORD",
+    "PROSPEO_API_KEY",
+    "REOON_API_KEY",
+    "MILLION_VERIFIER_API_KEY",
+    "MAILERSEND_API_KEY",
+    "MAILERSEND_SMTP_PASSWORD",
+    "SMTP2GO_API_KEY",
+    "SMTP2GO_SMTP_PASSWORD",
     "GITHUB_TOKEN",
     *{f"GROQ_API_KEY_{i}" for i in range(1, 20)},
+    *{f"HUNTER_API_KEY_{i}" for i in range(1, 20)},
+    *{f"PROSPEO_API_KEY_{i}" for i in range(1, 20)},
+    *{f"REOON_API_KEY_{i}" for i in range(1, 20)},
+    *{f"MILLION_VERIFIER_API_KEY_{i}" for i in range(1, 20)},
 }
 
 
@@ -529,10 +521,11 @@ def api_github_repos():
             "error": "No repos found. Check your token scope (needs read:user + repo) or GitHub URL."
         })
 
-    # Build suggested URL map using CANDIDATE_PROJECTS names as keys
-    proj_names   = config.CANDIDATE_PROJECTS
-    url_map      = gh.project_url_map(proj_names) if proj_names else {}
-    # Also include explicit overrides already saved
+    # Project names come from the parsed CV rather than a hand-typed list.
+    proj_names = [p.get("name", "") for p in _active_profile().get("projects", [])
+                  if p.get("name")]
+    url_map    = gh.project_url_map(proj_names) if proj_names else {}
+    # Explicit overrides already saved win over anything fetched.
     url_map.update(config.CANDIDATE_PROJECT_URLS)
 
     return jsonify({

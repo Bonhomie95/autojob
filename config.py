@@ -41,6 +41,18 @@ class Config:
 
         # Keep single-key attr for any code that still reads it directly
         self.HUNTER_API_KEY: str = self.HUNTER_API_KEYS[0] if self.HUNTER_API_KEYS else ""
+        self.PROSPEO_API_KEYS: list[str] = self._load_key_pool("PROSPEO_API_KEY")
+        self.PROSPEO_API_KEY: str = self.PROSPEO_API_KEYS[0] if self.PROSPEO_API_KEYS else ""
+        self.REOON_API_KEYS: list[str] = self._load_key_pool("REOON_API_KEY")
+        self.REOON_API_KEY: str = self.REOON_API_KEYS[0] if self.REOON_API_KEYS else ""
+        self.MILLION_VERIFIER_API_KEYS: list[str] = self._load_key_pool("MILLION_VERIFIER_API_KEY")
+        self.MILLION_VERIFIER_API_KEY: str = (
+            self.MILLION_VERIFIER_API_KEYS[0] if self.MILLION_VERIFIER_API_KEYS else ""
+        )
+        self.CONTACT_SEARCH_ENABLED: bool = os.getenv("CONTACT_SEARCH_ENABLED", "true").lower() == "true"
+        self.CONTACT_SEARCH_ENGINE: str = os.getenv("CONTACT_SEARCH_ENGINE", "duckduckgo,bing,google")
+        self.CONTACT_SEARCH_MAX_RESULTS: int = int(os.getenv("CONTACT_SEARCH_MAX_RESULTS", "8"))
+        self.CONTACT_AI_FALLBACK: bool = os.getenv("CONTACT_AI_FALLBACK", "true").lower() == "true"
 
         # ── GitHub Integration
         # Personal access token (classic or fine-grained, read:user + repo scope).
@@ -62,31 +74,21 @@ class Config:
             except Exception:
                 pass  # silently ignore malformed JSON
 
-        # ── Target roles & keywords
-        self.TARGET_ROLES: list[str] = [
-            r.strip()
-            for r in os.getenv("TARGET_ROLES",
-                                "Software Developer,Full Stack Engineer,Backend Engineer").split(",")
-            if r.strip()
-        ]
-        self.KEYWORDS: list[str] = [
-            k.strip() for k in os.getenv("KEYWORDS", "").split(",") if k.strip()
-        ]
+        # ── Job targeting
+        # What to search for, which seniority, and which skills matter are all
+        # derived from the CV — see core/discovery.py and core/cv_profile.py.
+        # Only the blacklist stays manual: it encodes a preference the CV
+        # cannot express ("never show me unpaid work").
         self.BLACKLIST_KEYWORDS: list[str] = [
             k.strip().lower()
             for k in os.getenv("BLACKLIST_KEYWORDS", "internship,unpaid").split(",")
             if k.strip()
         ]
-        self.EXPERIENCE_LEVEL: list[str] = [
-            e.strip()
-            for e in os.getenv("EXPERIENCE_LEVEL", "mid,senior").split(",")
-            if e.strip()
-        ]
 
         # ── Salary
+        # A floor only. Postings below it are filtered out; postings that
+        # state no salary at all are kept, since most don't list one.
         self.MIN_SALARY: int = int(os.getenv("MIN_SALARY", 0))
-        self.MAX_SALARY: int = int(os.getenv("MAX_SALARY", 999999))
-        self.SALARY_CURRENCY: str = os.getenv("SALARY_CURRENCY", "USD")
 
         # ── Location
         self.REMOTE_ONLY: bool = os.getenv("REMOTE_ONLY", "true").lower() == "true"
@@ -103,9 +105,6 @@ class Config:
         self.CANDIDATE_LOCATION: str = os.getenv("CANDIDATE_LOCATION", "")
         self.CANDIDATE_LINKEDIN: str = os.getenv("CANDIDATE_LINKEDIN", "")
         self.CANDIDATE_GITHUB: str   = os.getenv("CANDIDATE_GITHUB", "")
-        self.CANDIDATE_PROJECTS: list[str] = [
-            p.strip() for p in os.getenv("CANDIDATE_PROJECTS", "").split(",") if p.strip()
-        ]
 
         # ── Scrapers
         self.SCRAPE_LINKEDIN: bool       = os.getenv("SCRAPE_LINKEDIN", "true").lower() == "true"
@@ -118,14 +117,14 @@ class Config:
         self.SCRAPE_ARBEITNOW: bool      = os.getenv("SCRAPE_ARBEITNOW", "true").lower() == "true"
         self.SCRAPE_HACKERNEWS: bool     = os.getenv("SCRAPE_HACKERNEWS", "true").lower() == "true"
         self.MAX_JOBS_PER_BOARD: int     = int(os.getenv("MAX_JOBS_PER_BOARD", 50))
-        self.LINKEDIN_EMAIL: str         = os.getenv("LINKEDIN_EMAIL", "")
-        self.LINKEDIN_PASSWORD: str      = os.getenv("LINKEDIN_PASSWORD", "")
-
         # ── Scoring & docs
         self.MIN_MATCH_SCORE: int           = int(os.getenv("MIN_MATCH_SCORE", 60))
+        self.LLM_SCORING: bool              = os.getenv("LLM_SCORING", "false").lower() == "true"
+        # Documents are assembled offline from the parsed CV. Only jobs
+        # scoring at or above this get an LLM polish pass (1 call, not 3).
+        # Set to 101 to disable polishing and run with zero API calls.
+        self.LLM_POLISH_MIN_SCORE: int      = int(os.getenv("LLM_POLISH_MIN_SCORE", 85))
         self.GENERATE_DOCS_WITHOUT_HR: bool = os.getenv("GENERATE_DOCS_WITHOUT_HR", "true").lower() == "true"
-        # Fetch a brief company summary before scoring for richer personalisation
-        self.ENRICH_COMPANY_DATA: bool      = os.getenv("ENRICH_COMPANY_DATA", "true").lower() == "true"
 
         # ── Paths
         self.OUTPUT_DIR: str = os.getenv("OUTPUT_DIR", "output")
@@ -150,8 +149,8 @@ class Config:
                     p = f"socks5://{p}"
                 self.PROXY_LIST.append(p)
 
-        # ── SMTP
-        self.SMTP_HOST: str      = os.getenv("SMTP_HOST", "smtp.gmail.com")
+        # ── Email API sending
+        self.SMTP_HOST: str      = os.getenv("SMTP_HOST", "")
         self.SMTP_PORT: int      = int(os.getenv("SMTP_PORT", "587"))
         self.SMTP_USER: str      = os.getenv("SMTP_USER", "")
         self.SMTP_PASSWORD: str  = os.getenv("SMTP_PASSWORD", "")
@@ -163,6 +162,16 @@ class Config:
         self.SMTP_RETRY_COUNT: int  = int(os.getenv("SMTP_RETRY_COUNT", "1"))
         self.SMTP_FORMAT: str       = os.getenv("SMTP_FORMAT", "plain").lower()
         self.SMTP_THROTTLE_SECONDS: int = int(os.getenv("SMTP_THROTTLE_SECONDS", "8"))
+        self.SMTP_REPLY_TO: str     = os.getenv("SMTP_REPLY_TO", self.CANDIDATE_EMAIL or self.SMTP_FROM)
+        self.EMAIL_DAILY_LIMIT: int = int(os.getenv("EMAIL_DAILY_LIMIT", "100"))
+        self.BREVO_API_KEY: str     = os.getenv("BREVO_API_KEY", "")
+        self.BREVO_FROM: str        = os.getenv("BREVO_FROM", self.SMTP_FROM or self.CANDIDATE_EMAIL)
+        self.BREVO_FROM_NAME: str   = os.getenv("BREVO_FROM_NAME", self.CANDIDATE_NAME)
+        self.SMTP2GO_API_KEY: str   = os.getenv("SMTP2GO_API_KEY", "")
+        self.SMTP2GO_FROM: str      = os.getenv("SMTP2GO_FROM", self.SMTP_FROM or self.CANDIDATE_EMAIL)
+        self.SMTP2GO_FROM_NAME: str = os.getenv("SMTP2GO_FROM_NAME", self.CANDIDATE_NAME)
+        self.EMAIL_PROVIDERS: list[dict] = self._load_email_providers()
+        self.SMTP_PROVIDERS: list[dict] = self.EMAIL_PROVIDERS
 
         # ── Deduplication
         # Days to remember a sent email address before allowing re-send
@@ -174,8 +183,8 @@ class Config:
         self.FOLLOW_UP_DAYS: int = int(os.getenv("FOLLOW_UP_DAYS", "6"))
 
         # ── IMAP (for reply detection)
-        # Defaults to Gmail IMAP; works with any IMAP server
-        self.IMAP_HOST: str     = os.getenv("IMAP_HOST", "imap.gmail.com")
+        # Optional IMAP reply detection. Leave blank to disable.
+        self.IMAP_HOST: str     = os.getenv("IMAP_HOST", "")
         self.IMAP_PORT: int     = int(os.getenv("IMAP_PORT", "993"))
         self.IMAP_USER: str     = os.getenv("IMAP_USER", self.SMTP_USER)
         self.IMAP_PASSWORD: str = os.getenv("IMAP_PASSWORD", self.SMTP_PASSWORD)
@@ -221,17 +230,34 @@ class Config:
 
 
     def _load_hunter_keys(self) -> list[str]:
+        return self._load_key_pool("HUNTER_API_KEY")
+
+    def _load_key_pool(self, base_name: str) -> list[str]:
         keys: list[str] = []
-        # Single key
-        k = os.getenv("HUNTER_API_KEY", "").strip()
+        k = os.getenv(base_name, "").strip()
         if k:
             keys.append(k)
-        # Numbered pool
         for i in range(1, 20):
-            k = os.getenv(f"HUNTER_API_KEY_{i}", "").strip()
+            k = os.getenv(f"{base_name}_{i}", "").strip()
             if k and k not in keys:
                 keys.append(k)
         return keys
+
+    def _load_email_providers(self) -> list[dict]:
+        providers: list[dict] = []
+
+        def add(name: str, api_key: str, from_addr: str, from_name: str):
+            if api_key and from_addr:
+                providers.append({
+                    "name": name,
+                    "api_key": api_key,
+                    "from": from_addr,
+                    "from_name": from_name or self.CANDIDATE_NAME,
+                })
+
+        add("brevo", self.BREVO_API_KEY, self.BREVO_FROM, self.BREVO_FROM_NAME)
+        add("smtp2go", self.SMTP2GO_API_KEY, self.SMTP2GO_FROM, self.SMTP2GO_FROM_NAME)
+        return providers
 
 
 config = Config()

@@ -55,6 +55,31 @@ def _mark_dead(pdict: dict):
         logger.warning(f"[Proxy] Marked dead: {host}")
 
 
+# Telltales of UTF-8 bytes that were decoded as Latin-1 somewhere upstream:
+# "Estágio" arrives as "EstÃ¡gio". Some boards (RemoteOK) serve this straight
+# from their own database, already escaped in the JSON, so it can't be fixed
+# by setting a response encoding — it has to be repaired after parsing.
+_MOJIBAKE_SIGNS = ("Ã", "Â", "â€", "Ð", "Ñ")
+
+
+def _fix_mojibake(text: str) -> str:
+    """
+    Repair double-encoded text, but only when the repair round-trips cleanly.
+
+    Encoding back to Latin-1 and decoding as UTF-8 reverses the original
+    corruption. If the text was never corrupted, that raises and the original
+    is returned untouched — so legitimately accented text is left alone.
+    """
+    if not any(sign in text for sign in _MOJIBAKE_SIGNS):
+        return text
+    try:
+        repaired = text.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+    # A repair that leaves replacement chars behind is worse than no repair.
+    return text if "�" in repaired else repaired
+
+
 class BaseScraper(ABC):
     name: str = "base"
 
@@ -110,4 +135,4 @@ class BaseScraper(ABC):
     def _clean(self, text: str | None) -> str:
         if not text:
             return ""
-        return " ".join(str(text).split())
+        return " ".join(_fix_mojibake(str(text)).split())
