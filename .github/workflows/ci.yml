@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: testing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff pytest-cov
+
+      - name: Lint (ruff)
+        run: ruff check autojob tests
+
+      - name: Run tests with coverage
+        run: pytest --cov=autojob --cov-report=term-missing --cov-fail-under=70
+
+  migrations-check:
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: development
+      FLASK_APP: autojob.wsgi:app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Ensure models match migrations (no un-generated changes)
+        run: |
+          flask db upgrade
+          flask db migrate -m "ci-drift-check" || true
+          # Fail if a new migration with real operations was generated.
+          if git status --porcelain migrations/versions | grep -q '.py'; then
+            echo "Model changes not captured in a migration. Run 'flask db migrate'."
+            git diff --stat
+            exit 1
+          fi

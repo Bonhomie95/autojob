@@ -1,220 +1,184 @@
 {% extends "base.html" %}
-{% block title %}{{ job.title }} — Auto Job{% endblock %}
+{% block title %}{{ job.title }} — AutoJob{% endblock %}
 
 {% block content %}
-<div style="margin-bottom:1.5rem;">
-  <a href="/jobs" style="color:var(--text-dim); text-decoration:none; font-size:.85rem;">← Back to Jobs</a>
-</div>
+<a href="/jobs" class="hint" style="text-decoration:none;display:inline-block;margin-bottom:var(--sp-4);">← Back to jobs</a>
 
-<!-- Header -->
-<div style="display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; margin-bottom:1.5rem; flex-wrap:wrap;">
-  <div>
-    <h1 style="font-size:1.4rem; font-weight:700;">{{ job.title }}</h1>
-    <div style="color:var(--text-dim); margin-top:.35rem; display:flex; gap:1rem; flex-wrap:wrap; font-size:.9rem;">
+<div class="spread" style="margin-bottom:var(--sp-5);align-items:flex-start;">
+  <div style="min-width:0;">
+    <h1 class="page-title">{{ job.title }}</h1>
+    <div class="row" style="margin-top:var(--sp-2);color:var(--text-dim);">
       <span>🏢 {{ job.company }}</span>
       {% if job.location %}<span>📍 {{ job.location }}</span>{% endif %}
       {% if job.salary %}<span style="color:var(--green);">💰 {{ job.salary }}</span>{% endif %}
-      <span class="badge badge-pending" style="font-size:.65rem;">{{ job.source }}</span>
+      <span class="chip">{{ job.source }}</span>
+      <span class="badge badge-{{ job.status }}">{{ job.status }}</span>
     </div>
   </div>
-  <div style="display:flex; gap:.75rem; align-items:center; flex-wrap:wrap;">
+  <div class="row">
     {% if job.score %}
-      <div class="score-ring {{ 'score-high' if job.score >= 75 else 'score-mid' if job.score >= 50 else 'score-low' }}" style="width:56px; height:56px; font-size:1.1rem;">
-        {{ job.score }}
-      </div>
+      <div class="score {{ 'score-high' if job.score >= 75 else 'score-mid' if job.score >= 50 else 'score-low' }}"
+           style="width:54px;height:54px;font-size:var(--step-1);">{{ job.score }}</div>
     {% endif %}
-    <a href="{{ job.url }}" target="_blank" class="btn btn-primary">View Posting ↗</a>
+    <a href="{{ job.url }}" target="_blank" rel="noopener" class="btn btn-primary">View posting ↗</a>
   </div>
 </div>
 
-<div style="display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; margin-bottom:1.5rem;">
+{% if job.contact_notes %}
+<div class="alert alert-info" style="margin-bottom:var(--sp-4);">
+  <span>ℹ</span><div><strong>Pipeline note:</strong> {{ job.contact_notes }}</div>
+</div>
+{% endif %}
 
-  <!-- Contact Info -->
+<div class="grid grid-2" style="margin-bottom:var(--sp-4);">
+
+  <!-- Contact -->
   <div class="card">
-    <div class="card-title">📞 HR & Contact Information</div>
-    <div style="display:flex; flex-direction:column; gap:.85rem;">
-
+    <div class="card-head"><div class="card-title">📞 Contact</div></div>
+    <div class="stack" style="gap:var(--sp-3);">
       <div>
-        <div style="font-size:.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; margin-bottom:.2rem;">HR Name</div>
-        <div style="font-weight:600;">{{ job.hr_name or '—' }}</div>
-        {% if job.hr_title %}<div style="color:var(--text-dim); font-size:.8rem;">{{ job.hr_title }}</div>{% endif %}
+        <div class="hint">HR name</div>
+        <div class="td-strong">{{ job.hr_name or '—' }}</div>
+        {% if job.hr_title %}<div class="hint">{{ job.hr_title }}</div>{% endif %}
       </div>
-
       <div>
-        <div style="font-size:.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; margin-bottom:.2rem;">HR Email</div>
-        {% if job.hr_email %}
-          <a href="mailto:{{ job.hr_email }}" style="color:var(--accent);">{{ job.hr_email }}</a>
-        {% else %}
-          <span style="color:var(--text-dim);">Not found</span>
-        {% endif %}
+        <div class="hint">HR email</div>
+        {% if job.hr_email %}<a href="mailto:{{ job.hr_email }}">{{ job.hr_email }}</a>
+        {% else %}<span class="td-dim">Not found</span>{% endif %}
       </div>
-
       <div>
-        <div style="font-size:.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; margin-bottom:.2rem;">Application Email</div>
-        {% if job.application_email %}
-          <a href="mailto:{{ job.application_email }}" style="color:var(--accent);">{{ job.application_email }}</a>
-        {% else %}
-          <span style="color:var(--text-dim);">Not found</span>
-        {% endif %}
+        <div class="hint">Application email</div>
+        {% if job.application_email %}<a href="mailto:{{ job.application_email }}">{{ job.application_email }}</a>
+        {% else %}<span class="td-dim">Not found</span>{% endif %}
       </div>
-
       <div>
-        <div style="font-size:.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; margin-bottom:.2rem;">Application URL</div>
+        <div class="hint">Application URL</div>
         {% if job.application_url %}
-          <a href="{{ job.application_url }}" target="_blank" style="color:var(--accent); word-break:break-all;">{{ job.application_url }}</a>
-        {% else %}
-          <span style="color:var(--text-dim);">—</span>
-        {% endif %}
+          <a href="{{ job.application_url }}" target="_blank" rel="noopener" style="word-break:break-all;">{{ job.application_url }}</a>
+        {% else %}<span class="td-dim">—</span>{% endif %}
       </div>
-
-      {% if job.contact_notes %}
+      {% if job.portal_status and job.portal_status != 'pending' %}
       <div>
-        <div style="font-size:.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; margin-bottom:.2rem;">Notes</div>
-        <div style="font-size:.85rem; color:var(--text-dim);">{{ job.contact_notes }}</div>
+        <div class="hint">Portal</div>
+        <span class="badge badge-{{ 'ok' if job.portal_status == 'submitted' else 'mute' if job.portal_status == 'skipped' else 'error' }}">{{ job.portal_status }}</span>
+        {% if job.portal_error %}<div class="hint">{{ job.portal_error }}</div>{% endif %}
       </div>
       {% endif %}
-
     </div>
   </div>
 
-  <!-- Output Files -->
+  <!-- Documents + actions -->
   <div class="card">
-    <div class="card-title">📁 Generated Documents</div>
+    <div class="card-head"><div class="card-title">📁 Application package</div></div>
+
     {% if output_files %}
-      <div style="display:flex; flex-direction:column; gap:.6rem;">
+      <div class="stack" style="gap:var(--sp-2);">
         {% for fname in output_files %}
           {% set ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else '' %}
-          {% set icon = '📄' if ext == 'pdf' else '📝' if ext == 'docx' else '📋' %}
           <a href="/output/{{ job.output_dir.split('output/')[-1] }}/{{ fname }}"
-             class="btn btn-secondary"
-             style="justify-content:flex-start; font-size:.85rem;"
-             download>
-            {{ icon }} {{ fname }}
+             class="btn btn-ghost" style="justify-content:flex-start;" download>
+            {{ '📄' if ext == 'pdf' else '📝' if ext == 'docx' else '📋' }} {{ fname }}
           </a>
         {% endfor %}
       </div>
-      <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid var(--border); font-size:.75rem; color:var(--text-dim);">
-        Output folder: <code>{{ job.output_dir }}</code>
-      </div>
+      <div class="hint" style="margin-top:var(--sp-3);">Folder: <code>{{ job.output_dir }}</code></div>
     {% else %}
-      <div style="color:var(--text-dim);">
-        {% if job.status == 'skipped' %}
-          Documents not generated — job was below the score threshold.
-        {% else %}
-          No documents generated yet.
-        {% endif %}
+      <div class="td-dim">
+        {% if job.status == 'skipped' %}Not generated — this job was filtered out.
+        {% else %}No documents generated yet.{% endif %}
       </div>
     {% endif %}
 
-    <!-- Status update -->
-    <div style="margin-top:1.25rem; padding-top:1rem; border-top:1px solid var(--border);">
-      <div style="font-size:.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; margin-bottom:.5rem;">Mark As</div>
-      <div style="display:flex; gap:.5rem; flex-wrap:wrap;">
-        <button onclick="updateStatus('{{ job.id }}', 'applied')" class="btn btn-primary" style="font-size:.8rem; padding:.35rem .75rem;">✉ Applied</button>
-        <button onclick="updateStatus('{{ job.id }}', 'skipped')" class="btn btn-secondary" style="font-size:.8rem; padding:.35rem .75rem;">Skip</button>
-        <button onclick="updateStatus('{{ job.id }}', 'pending')" class="btn btn-secondary" style="font-size:.8rem; padding:.35rem .75rem;">Reset</button>
-      </div>
+    <hr class="sep">
+    <div class="hint" style="margin-bottom:var(--sp-2);">Mark as</div>
+    <div class="row" style="gap:var(--sp-2);">
+      <button onclick="setStatus('applied')" class="btn btn-primary btn-sm">✉ Applied</button>
+      <button onclick="setStatus('skipped')" class="btn btn-ghost btn-sm">Skip</button>
+      <button onclick="setStatus('pending')" class="btn btn-ghost btn-sm">Reset</button>
+      <span id="status-msg" class="hint"></span>
     </div>
 
-    <!-- Email send section -->
-    <div style="margin-top:1.25rem; padding-top:1rem; border-top:1px solid var(--border);">
-      <div style="font-size:.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; margin-bottom:.75rem;">Send Application Email</div>
+    <hr class="sep">
+    <div class="hint" style="margin-bottom:var(--sp-2);">Send application</div>
+    {% set es = job.email_status or 'not_sent' %}
+    <div style="margin-bottom:var(--sp-3);">
+      {% if es == 'sent' %}
+        <span class="badge badge-ok">sent</span>
+        <span class="hint">{{ job.email_sent_at[:16].replace('T',' ') if job.email_sent_at else '' }}</span>
+      {% elif es == 'failed' %}
+        <span class="badge badge-error">failed</span> <span class="hint">{{ job.email_error or 'unknown error' }}</span>
+      {% elif es == 'no_contact' %}
+        <span class="badge badge-warn">no contact email</span>
+      {% else %}
+        <span class="hint">Not sent yet</span>
+      {% endif %}
+    </div>
 
-      <!-- Email status badge -->
-      {% set es = job.email_status or 'not_sent' %}
-      <div style="margin-bottom:.75rem; font-size:.85rem;">
-        {% if es == 'sent' %}
-          <span style="color:var(--green);">✅ Sent{{ ' on ' + job.email_sent_at[:16].replace('T',' ') if job.email_sent_at else '' }}</span>
-        {% elif es == 'failed' %}
-          <span style="color:var(--red);">❌ Failed: {{ job.email_error or 'unknown error' }}</span>
-        {% elif es == 'no_contact' %}
-          <span style="color:var(--yellow);">⚠ No contact email found</span>
-        {% else %}
-          <span style="color:var(--text-dim);">Not sent yet</span>
-        {% endif %}
-      </div>
-
-      <!-- To email field (pre-filled, editable) -->
-      <div style="margin-bottom:.6rem;">
-        <label style="font-size:.75rem; color:var(--text-dim);">To:</label>
-        <input type="text" id="send-to-{{ job.id }}"
-               value="{{ job.hr_email or job.application_email or '' }}"
-               placeholder="Enter recipient email if not auto-detected"
-               style="width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text);
-                      border-radius:6px; padding:.4rem .65rem; font-size:.8rem; margin-top:.2rem;">
-      </div>
-
-      <button onclick="sendEmail('{{ job.id }}')" id="send-btn-{{ job.id }}"
-              class="btn btn-primary" style="font-size:.8rem; padding:.35rem .85rem;"
-              {% if not job.output_dir %}disabled title="No documents generated yet"{% endif %}>
-        📧 Send Now
-      </button>
-      <div id="send-result-{{ job.id }}" style="margin-top:.5rem; font-size:.8rem;"></div>
+    <input type="text" id="to-email" value="{{ job.hr_email or job.application_email or '' }}"
+           placeholder="recipient@company.com"
+           style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);
+                  border-radius:var(--r-sm);padding:var(--sp-2) var(--sp-3);font-family:inherit;
+                  font-size:var(--step-0);margin-bottom:var(--sp-2);">
+    <div class="row">
+      <button onclick="sendEmail()" id="send-btn" class="btn btn-primary btn-sm"
+              {% if not job.output_dir %}disabled title="Generate documents first"{% endif %}>📧 Send now</button>
+      <span id="send-msg" class="hint"></span>
     </div>
   </div>
 </div>
 
-<!-- Job Description -->
 <div class="card">
-  <div class="card-title">📋 Job Description</div>
-  <div style="white-space:pre-wrap; font-size:.875rem; line-height:1.8; color:var(--text-dim); max-height:600px; overflow-y:auto;">{{ job.description or 'No description available.' }}</div>
+  <div class="card-head"><div class="card-title">📋 Job description</div></div>
+  <div style="white-space:pre-wrap;line-height:1.8;color:var(--text-dim);max-height:560px;overflow-y:auto;">{{ job.description or 'No description available.' }}</div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-function updateStatus(jobId, newStatus) {
-  fetch(`/api/job/${jobId}/status`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status: newStatus }),
-  })
-  .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-  .then(() => {
-    const labels = { applied: '✉ Applied', pending: 'Pending', skipped: 'Skipped' };
-    alert(`Status updated to: ${labels[newStatus] || newStatus}`);
-  })
-  .catch(err => {
-    alert('❌ Failed to update status: ' + err);
-  });
+const JOB_ID = {{ job.id | tojson }};
+
+async function setStatus(status) {
+  const msg = document.getElementById('status-msg');
+  try {
+    const r = await fetch(`/api/job/${JOB_ID}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    if (!r.ok) throw new Error(r.statusText);
+    msg.innerHTML = `<span style="color:var(--green)">✓ marked ${esc(status)}</span>`;
+    setTimeout(() => location.reload(), 700);
+  } catch (e) {
+    msg.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>`;
+  }
 }
 
-function sendEmail(jobId) {
-  const btn = document.getElementById(`send-btn-${jobId}`);
-  const result = document.getElementById(`send-result-${jobId}`);
-  const toInput = document.getElementById(`send-to-${jobId}`);
-  const toEmail = toInput ? toInput.value.trim() : '';
+async function sendEmail() {
+  const btn = document.getElementById('send-btn');
+  const msg = document.getElementById('send-msg');
+  const to = document.getElementById('to-email').value.trim();
 
-  if (!toEmail) {
-    result.innerHTML = '<span style="color:var(--red)">⚠ Enter a recipient email address</span>';
+  if (!to) {
+    msg.innerHTML = '<span style="color:var(--red)">Enter a recipient address</span>';
     return;
   }
-
   btn.disabled = true;
-  btn.textContent = '⏳ Sending…';
-  result.innerHTML = '';
+  btn.innerHTML = '<span class="spin">◜</span> Sending…';
+  msg.textContent = '';
 
-  fetch(`/api/job/${jobId}/send`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ to_email: toEmail }),
-  })
-  .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-  .then(data => {
-    btn.disabled = false;
-    btn.textContent = '📧 Send Now';
-    if (data.success) {
-      result.innerHTML = `<span style="color:var(--green)">✅ ${data.message}</span>`;
-      setTimeout(() => location.reload(), 1500);
-    } else {
-      result.innerHTML = `<span style="color:var(--red)">❌ ${data.message || data.error}</span>`;
+  try {
+    const d = await postJSON(`/api/job/${JOB_ID}/send`, { to_email: to });
+    if (d.success) {
+      msg.innerHTML = `<span style="color:var(--green)">✓ ${esc(d.message)}</span>`;
+      setTimeout(() => location.reload(), 1200);
+      return;
     }
-  })
-  .catch(err => {
-    btn.disabled = false;
-    btn.textContent = '📧 Send Now';
-    result.innerHTML = `<span style="color:var(--red)">❌ ${err}</span>`;
-  });
+    msg.innerHTML = `<span style="color:var(--red)">✕ ${esc(d.message || d.error)}</span>`;
+  } catch (e) {
+    msg.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>`;
+  }
+  btn.disabled = false;
+  btn.innerHTML = '📧 Send now';
 }
 </script>
 {% endblock %}

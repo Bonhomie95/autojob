@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Settings — AutoJob{% endblock %}
+
+{% block content %}
+<section class="section">
+  <div class="container">
+    {% set active = 'settings' %}{% include "dashboard/_tabs.html" %}
+
+    <div class="card" style="margin-bottom:var(--space-5);">
+      <h2 style="font-size:1.4rem;">Targeting &amp; behaviour</h2>
+      <form method="post" action="{{ url_for('settings.save_general') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+        <div class="grid cols-2">
+          <div class="field">
+            <label for="min_match_score">Minimum match score (0–100)</label>
+            <input type="number" id="min_match_score" name="min_match_score" min="0" max="100" value="{{ settings.min_match_score }}" />
+          </div>
+          <div class="field">
+            <label for="min_salary">Minimum salary (0 = any)</label>
+            <input type="number" id="min_salary" name="min_salary" min="0" value="{{ settings.min_salary }}" />
+          </div>
+          <div class="field">
+            <label for="target_countries">Target locations (comma-separated)</label>
+            <input type="text" id="target_countries" name="target_countries" value="{{ settings.target_countries }}" />
+          </div>
+          <div class="field">
+            <label for="blacklist_keywords">Blacklist keywords (comma-separated)</label>
+            <input type="text" id="blacklist_keywords" name="blacklist_keywords" value="{{ settings.blacklist_keywords }}" />
+          </div>
+          <div class="field">
+            <label for="follow_up_days">Follow up after (days)</label>
+            <input type="number" id="follow_up_days" name="follow_up_days" min="1" max="60" value="{{ settings.follow_up_days }}" />
+          </div>
+        </div>
+        <div class="field field-inline"><input type="checkbox" id="remote_only" name="remote_only" {{ 'checked' if settings.remote_only }} /><label for="remote_only">Remote roles only</label></div>
+        <div class="field field-inline"><input type="checkbox" id="follow_up_enabled" name="follow_up_enabled" {{ 'checked' if settings.follow_up_enabled }} /><label for="follow_up_enabled">Send one follow-up if no reply</label></div>
+        <div class="field field-inline"><input type="checkbox" id="generate_docs_without_hr" name="generate_docs_without_hr" {{ 'checked' if settings.generate_docs_without_hr }} /><label for="generate_docs_without_hr">Prepare documents even when no recruiter contact is found</label></div>
+        <div class="field field-inline"><input type="checkbox" id="schedule_enabled" name="schedule_enabled" {{ 'checked' if settings.schedule_enabled }} /><label for="schedule_enabled">Run automatically on a schedule</label></div>
+        <button type="submit" class="btn btn-primary">Save settings</button>
+      </form>
+    </div>
+
+    <div class="card" style="margin-bottom:var(--space-5);">
+      <h2 style="font-size:1.4rem;">Auto-send consent</h2>
+      <p>AutoJob will only email recruiters on your behalf after you explicitly opt in.
+         You stay in control and can turn this off anytime.</p>
+      <form method="post" action="{{ url_for('settings.sending_consent') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+        <div class="field field-inline"><input type="checkbox" id="consent" name="consent" {{ 'checked' if settings.sending_consent_at }} /><label for="consent">I authorise AutoJob to send applications from my configured sender</label></div>
+        <div class="field field-inline"><input type="checkbox" id="auto_send" name="auto_send" {{ 'checked' if settings.auto_send }} /><label for="auto_send">Send automatically during each run (otherwise I'll review first)</label></div>
+        <button type="submit" class="btn btn-primary">Update</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2 style="font-size:1.4rem;">Credentials</h2>
+      <p>Optional. Leave blank to use AutoJob's managed service where available.
+         Stored encrypted — we never show these back to you.</p>
+      <form method="post" action="{{ url_for('settings.save_credentials') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+        <div class="grid cols-2">
+          <div class="field">
+            <label for="groq">Groq API key(s) {% if creds.groq %}<span style="color:var(--color-accent)">✓ set</span>{% endif %}</label>
+            <input type="password" id="groq" name="groq" autocomplete="off" placeholder="{{ '•••••• (leave blank to keep)' if creds.groq else 'gsk_…' }}" />
+          </div>
+          <div class="field">
+            <label for="hunter">Hunter.io key {% if creds.hunter %}<span style="color:var(--color-accent)">✓ set</span>{% endif %}</label>
+            <input type="password" id="hunter" name="hunter" autocomplete="off" placeholder="{{ '••••••' if creds.hunter else 'optional' }}" />
+          </div>
+        </div>
+        <h3 style="margin-top:var(--space-3);">Sending (SMTP) {% if creds.smtp %}<span style="color:var(--color-accent); font-size:0.9rem;">✓ set</span>{% endif %}</h3>
+        <div class="grid cols-2">
+          <div class="field"><label for="smtp_host">SMTP host</label><input type="text" id="smtp_host" name="smtp_host" placeholder="smtp.provider.com" /></div>
+          <div class="field"><label for="smtp_port">Port</label><input type="text" id="smtp_port" name="smtp_port" placeholder="587" /></div>
+          <div class="field"><label for="smtp_user">Username</label><input type="text" id="smtp_user" name="smtp_user" autocomplete="off" /></div>
+          <div class="field"><label for="smtp_from">From address</label><input type="email" id="smtp_from" name="smtp_from" autocomplete="off" /></div>
+          <div class="field"><label for="smtp_from_name">From name</label><input type="text" id="smtp_from_name" name="smtp_from_name" autocomplete="off" placeholder="Your Name" /></div>
+          <div class="field"><label for="smtp_password">Password / App password</label><input type="password" id="smtp_password" name="smtp_password" autocomplete="off" placeholder="{{ '••••••' if creds.smtp else '' }}" /></div>
+        </div>
+
+        <h3 style="margin-top:var(--space-3);">Reply detection (IMAP) {% if creds.imap %}<span style="color:var(--color-accent); font-size:0.9rem;">✓ set</span>{% endif %}</h3>
+        <p style="font-size:0.9rem;">Used to detect recruiter replies (Gmail, Outlook, or any IMAP mailbox — use an app password).</p>
+        <div class="grid cols-2">
+          <div class="field"><label for="imap_host">IMAP host</label><input type="text" id="imap_host" name="imap_host" placeholder="imap.gmail.com" /></div>
+          <div class="field"><label for="imap_port">Port</label><input type="text" id="imap_port" name="imap_port" placeholder="993" /></div>
+          <div class="field"><label for="imap_user">Username</label><input type="text" id="imap_user" name="imap_user" autocomplete="off" /></div>
+          <div class="field"><label for="imap_password">Password / App password</label><input type="password" id="imap_password" name="imap_password" autocomplete="off" placeholder="{{ '••••••' if creds.imap else '' }}" /></div>
+        </div>
+        <button type="submit" class="btn btn-primary">Save credentials</button>
+      </form>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/app.js') }}"></script>{% endblock %}

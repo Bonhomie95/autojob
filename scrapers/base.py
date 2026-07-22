@@ -1,3 +1,5 @@
+import html
+import re
 import time
 import random
 import logging
@@ -55,29 +57,102 @@ def _mark_dead(pdict: dict):
         logger.warning(f"[Proxy] Marked dead: {host}")
 
 
-# Telltales of UTF-8 bytes that were decoded as Latin-1 somewhere upstream:
+# Telltales of UTF-8 bytes decoded as a single-byte charset upstream:
 # "Estágio" arrives as "EstÃ¡gio". Some boards (RemoteOK) serve this straight
 # from their own database, already escaped in the JSON, so it can't be fixed
 # by setting a response encoding — it has to be repaired after parsing.
-_MOJIBAKE_SIGNS = ("Ã", "Â", "â€", "Ð", "Ñ")
+#
+# The C1 range is the load-bearing half of this pattern. A Latin-1 decode
+# turns UTF-8 continuation bytes into raw C1 controls, so "We’re" arrives as
+# "Weâ\x80\x99re" — with no literal "â€" to match on. C1 characters carry no
+# meaning in real text, so their presence alone is proof of mangling.
+_MOJIBAKE_RE = re.compile(r"[-]|Ã[-¿]|â€|Â[ -¿]")
+
+
+def _looks_mangled(text: str) -> bool:
+    return bool(_MOJIBAKE_RE.search(text))
+
+
+def _byte_to_char(b: int) -> str:
+    """The character a single byte becomes when decoded as cp1252."""
+    try:
+        return bytes([b]).decode("cp1252")
+    except UnicodeDecodeError:
+        return chr(b)  # undefined cp1252 slot — survives as a raw C1 control
+
+
+# A mangled UTF-8 sequence always looks the same: one character standing in
+# for a lead byte (0xC0-0xFF), then one to three standing in for continuation
+# bytes (0x80-0xBF). Matching that shape lets each damaged run be repaired on
+# its own.
+# Each byte has two possible stand-ins, because the damage happens through
+# either charset: byte 0x80 shows up as "€" if cp1252 did the decoding, or as
+# a raw U+0080 control if Latin-1 did. Both forms have to match.
+_LEAD_CHARS = "".join(sorted(
+    {_byte_to_char(b) for b in range(0xC0, 0x100)}
+    | {chr(b) for b in range(0xC0, 0x100)}
+))
+_CONT_CHARS = "".join(sorted(
+    {_byte_to_char(b) for b in range(0x80, 0xC0)}
+    | {chr(b) for b in range(0x80, 0xC0)}
+))
+_MANGLED_RUN_RE = re.compile(
+    f"[{re.escape(_LEAD_CHARS)}][{re.escape(_CONT_CHARS)}]{{1,3}}"
+)
 
 
 def _fix_mojibake(text: str) -> str:
     """
-    Repair double-encoded text, but only when the repair round-trips cleanly.
+    Repair double-encoded text, one damaged run at a time.
 
-    Encoding back to Latin-1 and decoding as UTF-8 reverses the original
-    corruption. If the text was never corrupted, that raises and the original
-    is returned untouched — so legitimately accented text is left alone.
+    Repairing the whole string at once is tempting but wrong: a description
+    holding both a mangled bullet ("â\\x80¢") and one genuine non-Latin-1
+    character elsewhere — an emoji, a CJK name — cannot round-trip as a unit,
+    so a whole-string repair bails and leaves every mangled run in place.
+    Fixing each run independently repairs what is broken and leaves the rest
+    alone.
+
+    A run that doesn't decode as UTF-8 was never mangled, and is kept as-is —
+    which is what protects legitimately accented text like "Développeur".
     """
-    if not any(sign in text for sign in _MOJIBAKE_SIGNS):
+    if not _looks_mangled(text):
         return text
-    try:
-        repaired = text.encode("latin-1").decode("utf-8")
-    except (UnicodeEncodeError, UnicodeDecodeError):
-        return text
-    # A repair that leaves replacement chars behind is worse than no repair.
-    return text if "�" in repaired else repaired
+
+    def repair(match: re.Match) -> str:
+        run = match.group(0)
+        try:
+            decoded = _undo_byte_mangling(run).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return run
+        return run if "�" in decoded else decoded
+
+    return _MANGLED_RUN_RE.sub(repair, text)
+
+
+def _undo_byte_mangling(text: str) -> bytes:
+    """
+    Recover the original bytes from text mangled by a single-byte decode.
+
+    Neither cp1252 nor Latin-1 covers this alone. cp1252 is what mangles real
+    web text (it owns "€" at 0x80, which Latin-1 lacks), but cp1252 leaves a
+    few byte values undefined — 0x9D among them — and those survive as raw C1
+    control characters, where Latin-1's 1:1 mapping is what's needed. Smart
+    quotes hit both cases in a single string: "“" mangles through cp1252, "”"
+    through the 0x9D hole.
+
+    So: cp1252 per character, falling back to the raw code point for anything
+    it can't express. Raises ValueError on a character above U+00FF that
+    cp1252 rejects, which means the text was never mangled this way.
+    """
+    out = bytearray()
+    for ch in text:
+        try:
+            out.extend(ch.encode("cp1252"))
+        except UnicodeEncodeError:
+            if ord(ch) > 0xFF:
+                raise ValueError("not single-byte mangled text")
+            out.append(ord(ch))
+    return bytes(out)
 
 
 class BaseScraper(ABC):
@@ -133,6 +208,20 @@ class BaseScraper(ABC):
         ...
 
     def _clean(self, text: str | None) -> str:
+        """
+        Normalise scraped text: repair encoding damage, decode HTML entities,
+        collapse whitespace.
+
+        Entity decoding matters beyond display. This text is what the scorer
+        tokenises and what the document generator quotes into a CV, so a title
+        left as "Growth &amp; Success" ends up in an employer's inbox exactly
+        like that.
+        """
         if not text:
             return ""
-        return " ".join(_fix_mojibake(str(text)).split())
+        cleaned = _fix_mojibake(str(text))
+        # Twice: some boards double-escape, leaving "&amp;amp;".
+        cleaned = html.unescape(html.unescape(cleaned))
+        # Non-breaking spaces survive unescape and break tokenisation.
+        cleaned = cleaned.replace("\xa0", " ")
+        return " ".join(cleaned.split())

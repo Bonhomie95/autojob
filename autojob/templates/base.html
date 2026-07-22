@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}AutoJob — your CV, applied automatically{% endblock %}</title>
+  <meta name="description" content="Upload your CV once. AutoJob finds matching roles, tailors your application, and applies for you — automatically." />
+  {% if current_user.is_authenticated %}<meta name="csrf-token" content="{{ csrf_token() }}" />{% endif %}
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%230369a1'%3E%3Cpath d='M12 2 3 7v10l9 5 9-5V7z'/%3E%3C/svg%3E" />
+  {% block head_extra %}{% endblock %}
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  {% block nav %}
+  <header class="nav">
+    <div class="container nav-inner">
+      <a class="brand" href="{{ url_for('main.landing') }}" aria-label="AutoJob home">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="m9 12 2 2 4-4"/></svg>
+        AutoJob
+      </a>
+      <nav class="nav-links" aria-label="Primary">
+        {% if current_user.is_authenticated %}
+          <a class="hide-sm" href="{{ url_for('main.dashboard') }}">Dashboard</a>
+          <form method="post" action="{{ url_for('auth.logout') }}" style="margin:0">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+            <button class="btn btn-ghost" type="submit">Sign out</button>
+          </form>
+        {% else %}
+          <a class="hide-sm" href="{{ url_for('auth.login') }}">Sign in</a>
+          <a class="btn btn-primary" href="{{ url_for('auth.register') }}">Get started</a>
+        {% endif %}
+      </nav>
+    </div>
+  </header>
+  {% endblock %}
+
+  <main id="main">
+    {% block flashes %}
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="container"><div class="flashes" role="status" aria-live="polite">
+            {% for category, message in messages %}
+              <div class="flash {{ category }}">{{ message }}</div>
+            {% endfor %}
+          </div></div>
+        {% endif %}
+      {% endwith %}
+    {% endblock %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  {% block footer %}
+  <footer class="footer">
+    <div class="container footer-inner">
+      <span>&copy; {{ now_year }} AutoJob. Built to get you hired.</span>
+      <span class="nav-links">
+        <a href="{{ url_for('main.landing') }}#how">How it works</a>
+        <a href="{{ url_for('main.landing') }}#features">Features</a>
+      </span>
+    </div>
+  </footer>
+  {% endblock %}
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Jobs — AutoJob{% endblock %}
+
+{% block content %}
+<section class="section">
+  <div class="container">
+    {% set active = 'jobs' %}{% include "dashboard/_tabs.html" %}
+
+    {% if awaiting %}
+    <div class="card" style="border-color:var(--color-accent); margin-bottom:var(--space-5);">
+      <h3>{{ awaiting|length }} repl{{ 'y' if awaiting|length == 1 else 'ies' }} need{{ 's' if awaiting|length == 1 else '' }} your attention</h3>
+      <p style="font-size:0.92rem;">A recruiter replied — AutoJob won't auto-follow-up. Reply personally:</p>
+      <ul style="margin:0;">
+        {% for j in awaiting %}
+          <li><a href="{{ url_for('jobs.detail', job_id=j.id) }}">{{ j.title }} @ {{ j.company }}</a>
+              {% if j.hr_email %}— {{ j.hr_email }}{% endif %}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <div style="display:flex; gap:var(--space-3); align-items:center; justify-content:space-between; flex-wrap:wrap; margin-bottom:var(--space-4);">
+      <div class="dash-tabs" style="border:none; margin:0;">
+        {% for s in ['all','done','applied','skipped','pending'] %}
+          <a href="{{ url_for('jobs.list_jobs', status=s) }}" class="{{ 'active' if status == s }}" style="padding:var(--space-2) var(--space-3);">{{ s|capitalize }}</a>
+        {% endfor %}
+      </div>
+      <form method="post" action="{{ url_for('jobs.run_followups') }}" style="margin:0;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+        <button class="btn btn-ghost" type="submit">Check replies &amp; follow up</button>
+      </form>
+    </div>
+
+    {% if jobs %}
+    <div class="card" style="overflow-x:auto; padding:0;">
+      <table style="width:100%; border-collapse:collapse; font-size:0.92rem;">
+        <thead>
+          <tr style="text-align:left; border-bottom:1px solid var(--color-border-soft);">
+            <th style="padding:var(--space-3);">Role</th>
+            <th style="padding:var(--space-3);">Company</th>
+            <th style="padding:var(--space-3);">Score</th>
+            <th style="padding:var(--space-3);">Contact</th>
+            <th style="padding:var(--space-3);">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for j in jobs %}
+          <tr style="border-bottom:1px solid var(--color-border-soft);">
+            <td style="padding:var(--space-3);"><a href="{{ url_for('jobs.detail', job_id=j.id) }}">{{ j.title or '—' }}</a></td>
+            <td style="padding:var(--space-3);">{{ j.company or '—' }}</td>
+            <td style="padding:var(--space-3); font-variant-numeric:tabular-nums;">{{ j.score }}</td>
+            <td style="padding:var(--space-3);">{{ j.hr_email or j.application_email or '—' }}</td>
+            <td style="padding:var(--space-3);">
+              <span style="font-weight:600; color:{{ 'var(--color-accent)' if j.email_status=='sent' else 'var(--color-fg-soft)' }};">
+                {% if j.reply_detected %}replied{% elif j.email_status=='sent' %}sent{% else %}{{ j.status }}{% endif %}
+              </span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="card"><p style="margin:0;">No jobs yet. Run a discovery pass from the <a href="{{ url_for('main.dashboard') }}">Overview</a>.</p></div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — AutoJob{% endblock %}
+
+{% block content %}
+<section class="section">
+  <div class="container">
+    {% set active = 'overview' %}{% include "dashboard/_tabs.html" %}
+
+    {% if awaiting %}
+    <div class="card" style="border-color:var(--color-accent); margin-bottom:var(--space-5);">
+      <h3 style="margin-bottom:var(--space-1);">{{ awaiting|length }} recruiter repl{{ 'y' if awaiting|length == 1 else 'ies' }} — follow up personally</h3>
+      <p style="margin:0; font-size:0.92rem;">AutoJob paused auto-follow-up for these.
+        <a href="{{ url_for('jobs.list_jobs') }}">Review them →</a></p>
+    </div>
+    {% endif %}
+
+    <div style="display:flex; flex-wrap:wrap; gap:var(--space-3); align-items:center; justify-content:space-between; margin-bottom:var(--space-5);">
+      <div>
+        <h1 style="font-size:1.8rem; margin-bottom:var(--space-1);">Hi {{ current_user.name or 'there' }}</h1>
+        <p style="margin:0;">Here's your job-application activity.</p>
+      </div>
+      <a class="btn btn-accent" href="{{ url_for('cv.profile_page') }}">Upload CV</a>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat"><div class="num">{{ stats.total }}</div><div class="label">Jobs discovered</div></div>
+      <div class="stat"><div class="num">{{ stats.done }}</div><div class="label">Applications ready</div></div>
+      <div class="stat"><div class="num">{{ stats.emails_sent }}</div><div class="label">Emails sent</div></div>
+      <div class="stat"><div class="num">{{ stats.replies }}</div><div class="label">Replies</div></div>
+    </div>
+
+    <div class="card" style="margin-top:var(--space-5);">
+      <div style="display:flex; gap:var(--space-3); align-items:center; justify-content:space-between; flex-wrap:wrap;">
+        <div>
+          <h3 style="margin-bottom:var(--space-1);">Find &amp; score new jobs</h3>
+          <p style="margin:0; font-size:0.92rem;">Runs a discovery pass against your CV across job boards.</p>
+        </div>
+        <button id="run-btn" class="btn btn-primary">Run now</button>
+      </div>
+      <pre id="run-log" style="display:none; margin-top:var(--space-4); background:var(--color-muted); border-radius:var(--radius); padding:var(--space-3); max-height:280px; overflow:auto; font-size:0.82rem; line-height:1.5; white-space:pre-wrap;" aria-live="polite"></pre>
+    </div>
+
+    <div class="card" style="margin-top:var(--space-5);">
+      <h3>Next step: add your CV</h3>
+      <p>Your private workspace is ready. <a href="{{ url_for('cv.profile_page') }}">Upload your CV</a>
+         and AutoJob will parse it and figure out which roles to search for. Running the
+         pipeline automatically arrives with background processing (Phase 5).</p>
+      <p style="margin:0; font-size:0.9rem;">Auto-send is currently
+        <strong>{{ 'on' if settings.auto_send else 'off' }}</strong>,
+        follow-ups <strong>{{ 'on' if settings.follow_up_enabled else 'off' }}</strong>,
+        minimum match score <strong>{{ settings.min_match_score }}</strong>.</p>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var btn = document.getElementById("run-btn");
+  var log = document.getElementById("run-log");
+  if (!btn) return;
+  var token = document.querySelector("meta[name='csrf-token']");
+  token = token ? token.content : "";
+
+  function line(msg) {
+    log.style.display = "block";
+    log.textContent += msg + "\n";
+    log.scrollTop = log.scrollHeight;
+  }
+
+  btn.addEventListener("click", function () {
+    btn.disabled = true;
+    btn.textContent = "Running…";
+    log.textContent = "";
+    fetch("{{ url_for('runs.start') }}", {
+      method: "POST",
+      headers: { "X-CSRFToken": token, "Content-Type": "application/json" },
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) { line("⚠ " + (res.d.error || "Could not start")); reset(); return; }
+        var es = new EventSource("/runs/" + res.d.run_id + "/stream");
+        es.onmessage = function (e) {
+          var data = JSON.parse(e.data);
+          if (data.message) line(data.message);
+          if (data.done) { es.close(); reset(); setTimeout(function () { location.reload(); }, 1200); }
+        };
+        es.onerror = function () { es.close(); reset(); };
+      })
+      .catch(function () { line("⚠ Network error"); reset(); });
+  });
+
+  function reset() { btn.disabled = false; btn.textContent = "Run now"; }
+})();
+</script>
+{% endblock %}

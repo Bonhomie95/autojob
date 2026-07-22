@@ -1,5 +1,21 @@
 # 🎯 Auto Job
 
+> **Two applications live in this repo:**
+> - **`autojob/` — the multi-tenant SaaS** (new). Sign-up/login, per-user CV upload,
+>   isolated data per tenant, encrypted per-user credentials, background job runs
+>   via Celery, a landing page + dashboard UI. Run it with `python manage.py run`
+>   (or Docker). See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** and
+>   **[docs/COMPLIANCE.md](docs/COMPLIANCE.md)**.
+> - **`app.py` + engine modules (`core/`, `scrapers/`, `mailer.py`, …) — the original
+>   single-user tool** (below). The SaaS reuses these engine parts.
+>
+> Quickstart (SaaS): `pip install -r requirements.txt` → `cp .env.saas.example .env`
+> → `FLASK_APP=autojob.wsgi:app flask db upgrade` → `python manage.py run` → http://localhost:9000
+
+---
+
+## Original single-user tool
+
 > Automated job discovery, token-light scoring, HR contact extraction, per-company application package generation, sender rotation, follow-up scheduling, and reply detection — all in a clean Flask dashboard.
 
 ---

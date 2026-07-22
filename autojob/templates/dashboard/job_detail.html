@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} — AutoJob{% endblock %}
+
+{% block content %}
+<section class="section">
+  <div class="container">
+    {% set active = 'jobs' %}{% include "dashboard/_tabs.html" %}
+    <p style="margin-bottom:var(--space-3);"><a href="{{ url_for('jobs.list_jobs') }}">← All jobs</a></p>
+
+    <div class="card" style="margin-bottom:var(--space-5);">
+      <h1 style="font-size:1.5rem; margin-bottom:var(--space-1);">{{ job.title }}</h1>
+      <p style="margin:0 0 var(--space-3);">{{ job.company }}{% if job.location %} · {{ job.location }}{% endif %}</p>
+      <p style="margin:0; font-size:0.92rem;">
+        Match score <strong>{{ job.score }}/100</strong> · Source {{ job.source or '—' }} ·
+        Status <strong>{{ job.status }}</strong>
+        {% if job.reply_detected %}· <span style="color:var(--color-accent); font-weight:600;">Recruiter replied — follow up personally</span>{% endif %}
+      </p>
+      {% if job.url %}<p style="margin-top:var(--space-2);"><a href="{{ job.url }}" target="_blank" rel="noopener">View original posting ↗</a></p>{% endif %}
+    </div>
+
+    <div class="grid cols-2" style="margin-bottom:var(--space-5);">
+      <div class="card">
+        <h3>Contact</h3>
+        <p style="margin:0 0 var(--space-2); font-size:0.92rem;">HR: {{ job.hr_name or '—' }}{% if job.hr_title %} ({{ job.hr_title }}){% endif %}</p>
+        <p style="margin:0 0 var(--space-2); font-size:0.92rem;">Email: {{ job.hr_email or job.application_email or '—' }}</p>
+        {% if job.application_url %}<p style="margin:0; font-size:0.92rem;">Apply URL: <a href="{{ job.application_url }}" target="_blank" rel="noopener">link ↗</a></p>{% endif %}
+      </div>
+      <div class="card">
+        <h3>Documents</h3>
+        {% if files %}
+          <ul style="margin:0 0 var(--space-3); padding-left:1.1rem;">
+            {% for f in files %}<li><a href="{{ url_for('jobs.download', job_id=job.id, filename=f) }}">{{ f }}</a></li>{% endfor %}
+          </ul>
+        {% else %}
+          <p style="font-size:0.92rem;">No documents generated{% if not (job.hr_email or job.application_email) %} — no contact was found for this job.{% endif %}</p>
+        {% endif %}
+
+        {% if files and (job.hr_email or job.application_email) %}
+        <form method="post" action="{{ url_for('jobs.send', job_id=job.id) }}" style="margin:0;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+          <button class="btn btn-primary" type="submit"
+                  {% if job.email_status == 'sent' %}disabled{% endif %}>
+            {{ 'Already sent' if job.email_status == 'sent' else 'Send application' }}
+          </button>
+        </form>
+        {% if job.email_error %}<p class="error" style="margin-top:var(--space-2);">{{ job.email_error }}</p>{% endif %}
+        {% endif %}
+      </div>
+    </div>
+
+    {% if job.description %}
+    <div class="card">
+      <h3>Job description</h3>
+      <p style="white-space:pre-wrap; font-size:0.92rem;">{{ job.description[:4000] }}</p>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

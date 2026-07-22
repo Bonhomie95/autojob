@@ -1,0 +1,31 @@
+[project]
+name = "autojob-saas"
+version = "0.1.0"
+description = "Multi-tenant SaaS for automated job applications"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# The SaaS package and tests are held to lint standards; the legacy engine
+# modules (core/, scrapers/, etc.) predate this and are excluded for now.
+extend-exclude = ["venv", "migrations", "output", "input"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+  "E501",  # line length is handled by formatter, not enforced hard
+  "B008",  # function calls in argument defaults (Flask/SQLAlchemy patterns)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["autojob"]
+omit = ["autojob/wsgi.py", "autojob/celery_app.py"]

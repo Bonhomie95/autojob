@@ -611,6 +611,14 @@ def _write_email(email_data: dict, job: dict, contact: dict, score_data: dict, f
     ]
     (folder / "EMAIL_DRAFT.txt").write_text("\n".join(lines), encoding="utf-8")
 
+    # Machine-readable companion for automated senders (the SaaS reads this;
+    # the legacy human-driven flow keeps using EMAIL_DRAFT.txt above).
+    import json as _json
+    (folder / "email.json").write_text(
+        _json.dumps({"to": to_email, "subject": subject, "body": body}),
+        encoding="utf-8",
+    )
+
 
 # ──────────────────────────────────────────────────────────
 # PDF Conversion — Windows aware

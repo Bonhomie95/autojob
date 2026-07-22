@@ -97,10 +97,12 @@ def api_profile():
 
     cv_path = _find_cv()
     if not cv_path:
-        return jsonify({
-            "ok": False,
-            "error": "No CV found in input/ — upload one to get started.",
-        })
+        return jsonify(
+            {
+                "ok": False,
+                "error": "No CV found in input/ — upload one to get started.",
+            }
+        )
 
     try:
         profile = get_profile(cv_path)
@@ -111,35 +113,94 @@ def api_profile():
     sendable, blockers = profile_is_sendable(profile)
     issues = profile.get("issues", [])
 
-    return jsonify({
-        "ok": sendable,
-        "source_file": Path(cv_path).name,
-        "name": profile.get("name", ""),
-        "email": profile.get("email", ""),
-        "phone": profile.get("phone", ""),
-        "location": profile.get("location", ""),
-        "seniority": profile.get("seniority", ""),
-        "years_experience": profile.get("years_experience", 0),
-        "years_label": years_phrase(profile.get("years_experience", 0)),
-        "titles": profile.get("titles", []),
-        "queries": derive_queries(profile),
-        "skills_by_category": profile.get("skills_by_category", {}),
-        "skill_count": len(profile.get("skills", [])),
-        "experience": [
+    return jsonify(
+        {
+            "ok": sendable,
+            "source_file": Path(cv_path).name,
+            "name": profile.get("name", ""),
+            "email": profile.get("email", ""),
+            "phone": profile.get("phone", ""),
+            "location": profile.get("location", ""),
+            "seniority": profile.get("seniority", ""),
+            "years_experience": profile.get("years_experience", 0),
+            "years_label": years_phrase(profile.get("years_experience", 0)),
+            "titles": profile.get("titles", []),
+            "queries": derive_queries(profile),
+            "skills_by_category": profile.get("skills_by_category", {}),
+            "skill_count": len(profile.get("skills", [])),
+            "experience": [
+                {
+                    "title": e.get("title", ""),
+                    "company": e.get("company", ""),
+                    "period": e.get("period", ""),
+                    "bullet_count": len(e.get("bullets", [])),
+                }
+                for e in profile.get("experience", [])
+            ],
+            "projects": [p.get("name", "") for p in profile.get("projects", [])],
+            "certifications": profile.get("certifications", []),
+            "education": profile.get("education", []),
+            "blockers": [b[6:].strip() for b in blockers],
+            "warnings": [i[5:].strip() for i in issues if i.startswith("WARN:")],
+            "notes": [i[5:].strip() for i in issues if i.startswith("INFO:")],
+            # Fields the CV states more than once, awaiting a decision.
+            "ambiguous": [
+                {
+                    "field": field,
+                    "options": profile["contact_choices"][field]["options"],
+                    "current": profile["contact_choices"][field]["value"],
+                }
+                for field in profile.get("ambiguous_fields", [])
+            ],
+            "contact_choices": profile.get("contact_choices", {}),
+        }
+    )
+
+
+@app.route("/api/profile/choose", methods=["POST"])
+def api_profile_choose():
+    """
+    Record which value to use for a contact field the CV states twice.
+
+    Saved against this CV's hash, so it survives restarts and re-parses but
+    does not leak onto a different CV — or onto an edited version of this
+    one, where the old answer may no longer be right.
+    """
+    from pipeline import _find_cv
+    from core.cv_profile import cv_hash, get_profile, CONTACT_FIELDS
+    from database import save_cv_choice, clear_cv_choice
+
+    data = request.json or {}
+    field = (data.get("field") or "").strip()
+    value = (data.get("value") or "").strip()
+
+    if field not in CONTACT_FIELDS:
+        return jsonify({"error": f"Unknown field: {field}"}), 400
+
+    cv_path = _find_cv()
+    if not cv_path:
+        return jsonify({"error": "No CV found"}), 404
+    digest = cv_hash(cv_path)
+
+    if not value:
+        clear_cv_choice(digest, field)
+        return jsonify({"status": "cleared", "field": field})
+
+    # Only accept a value the CV (or .env) actually offers — this endpoint
+    # resolves an ambiguity, it does not set arbitrary contact details.
+    profile = get_profile(cv_path)
+    allowed = profile.get("contact_choices", {}).get(field, {}).get("options", [])
+    if value not in allowed:
+        return jsonify(
             {
-                "title": e.get("title", ""),
-                "company": e.get("company", ""),
-                "period": e.get("period", ""),
-                "bullet_count": len(e.get("bullets", [])),
+                "error": f"{value!r} is not one of the values found for {field}",
+                "options": allowed,
             }
-            for e in profile.get("experience", [])
-        ],
-        "projects": [p.get("name", "") for p in profile.get("projects", [])],
-        "certifications": profile.get("certifications", []),
-        "education": profile.get("education", []),
-        "blockers": [b[6:].strip() for b in blockers],
-        "warnings": [i[5:].strip() for i in issues if i.startswith("WARN:")],
-    })
+        ), 400
+
+    save_cv_choice(digest, field, value)
+    logger.info(f"[Profile] {field} set to {value!r} for {Path(cv_path).name}")
+    return jsonify({"status": "ok", "field": field, "value": value})
 
 
 @app.route("/api/profile/reparse", methods=["POST"])
@@ -739,7 +800,9 @@ def api_keys_status():
     hunter_keys = provider_status("HUNTER_API_KEY", config.HUNTER_API_KEYS)
     prospeo_keys = provider_status("PROSPEO_API_KEY", config.PROSPEO_API_KEYS)
     reoon_keys = provider_status("REOON_API_KEY", config.REOON_API_KEYS)
-    million_keys = provider_status("MILLION_VERIFIER_API_KEY", config.MILLION_VERIFIER_API_KEYS)
+    million_keys = provider_status(
+        "MILLION_VERIFIER_API_KEY", config.MILLION_VERIFIER_API_KEYS
+    )
 
     return jsonify(
         {

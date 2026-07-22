@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Create your account — AutoJob{% endblock %}
+{% block footer %}{% endblock %}
+
+{% block content %}
+<div class="auth-wrap">
+  <div class="auth-card">
+    <h1>Create your account</h1>
+    <p class="sub">Start applying automatically in minutes.</p>
+
+    <form method="post" action="{{ url_for('auth.register') }}" novalidate>
+      {{ form.csrf_token }}
+
+      <div class="field">
+        <label for="name">Full name</label>
+        <input type="text" id="name" name="name" autocomplete="name"
+               value="{{ form.name.data or '' }}" required />
+        {% for e in form.name.errors %}<div class="error">{{ e }}</div>{% endfor %}
+      </div>
+
+      <div class="field">
+        <label for="email">Work email</label>
+        <input type="email" id="email" name="email" autocomplete="email"
+               inputmode="email" value="{{ form.email.data or '' }}" required />
+        {% for e in form.email.errors %}<div class="error">{{ e }}</div>{% endfor %}
+      </div>
+
+      <div class="field">
+        <label for="password">Password</label>
+        <div class="password-wrap">
+          <input type="password" id="password" name="password" autocomplete="new-password" required />
+          <button type="button" class="toggle" data-toggle="password" aria-label="Show password">Show</button>
+        </div>
+        {% for e in form.password.errors %}<div class="error">{{ e }}</div>{% endfor %}
+        {% if not form.password.errors %}<div class="error" style="color:var(--color-fg-soft)">At least 8 characters, with a letter and a number.</div>{% endif %}
+      </div>
+
+      <div class="field">
+        <label for="confirm">Confirm password</label>
+        <input type="password" id="confirm" name="confirm" autocomplete="new-password" required />
+        {% for e in form.confirm.errors %}<div class="error">{{ e }}</div>{% endfor %}
+      </div>
+
+      <div class="field field-inline">
+        <input type="checkbox" id="accept_terms" name="accept_terms" required />
+        <label for="accept_terms">I agree to the Terms and Privacy Policy</label>
+      </div>
+      {% for e in form.accept_terms.errors %}<div class="error">{{ e }}</div>{% endfor %}
+
+      <button type="submit" class="btn btn-accent btn-block">Create account</button>
+    </form>
+
+    <p class="auth-alt">Already have an account? <a href="{{ url_for('auth.login') }}">Sign in</a></p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}<script src="{{ url_for('static', filename='js/app.js') }}"></script>{% endblock %}

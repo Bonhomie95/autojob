@@ -252,13 +252,24 @@ def _title_score(profile: dict, job_title: str) -> float:
     return best * 25.0
 
 
-def _seniority_fit(profile: dict, job: dict, job_text: str) -> tuple[float, str]:
+def _seniority_fit(profile: dict, job: dict, job_text: str,
+                   relaxed: bool = False) -> tuple[float, str]:
     """
     The realism gate. Returns (adjustment, reason).
 
     An adjustment of REJECT means the posting is out of reach and should
     never be applied to, no matter how well the stack lines up.
+
+    When ``relaxed`` is set (the SaaS default — "list jobs based on the CV
+    regardless of experience"), an experience mismatch heavily penalises the
+    score instead of hard-rejecting, so the posting still surfaces and the user
+    decides. A large fixed penalty is applied so these rank below true matches.
     """
+    def _out(adj: float, reason: str) -> tuple[float, str]:
+        if relaxed and adj == REJECT:
+            return -35.0, reason
+        return adj, reason
+
     cv_years = float(profile.get("years_experience") or 0)
     cv_level = profile.get("seniority", "mid")
     cv_idx = vocab.SENIORITY_ORDER.index(cv_level) if cv_level in vocab.SENIORITY_ORDER else 2
@@ -270,9 +281,9 @@ def _seniority_fit(profile: dict, job: dict, job_text: str) -> tuple[float, str]
     # Explicit years requirement is the hardest signal available.
     if demanded:
         if demanded > cv_years + 2:
-            return REJECT, (
+            return _out(REJECT, (
                 f"needs {demanded:.0f}y experience, CV has {cv_years:.1f}y"
-            )
+            ))
         if demanded > cv_years:
             return -12.0, f"slightly under: needs {demanded:.0f}y, has {cv_years:.1f}y"
 
@@ -281,7 +292,7 @@ def _seniority_fit(profile: dict, job: dict, job_text: str) -> tuple[float, str]
         gap = job_idx - cv_idx
 
         if gap >= 2:
-            return REJECT, f"{job_level} role, candidate is {cv_level}"
+            return _out(REJECT, f"{job_level} role, candidate is {cv_level}")
         if gap == 1:
             # One band up is a stretch, not a fantasy — worth applying to.
             return -10.0, f"stretch: {job_level} role, candidate is {cv_level}"
@@ -366,7 +377,8 @@ def _empty_score(**overrides) -> dict:
 # Offline scorer
 # ──────────────────────────────────────────────────────────────
 
-def score_offline(profile: dict, job: dict, blacklist: list[str]) -> dict:
+def score_offline(profile: dict, job: dict, blacklist: list[str],
+                  relaxed_experience: bool = False) -> dict:
     title = job.get("title", "")
     description = (job.get("description", "") or "")[:6000]
     job_text = f"{title}\n{description}"
@@ -385,7 +397,8 @@ def score_offline(profile: dict, job: dict, blacklist: list[str]) -> dict:
 
     skill_pts, matched, missing = _skill_score(profile, job_text)
     title_pts = _title_score(profile, title)
-    seniority_pts, seniority_note = _seniority_fit(profile, job, job_text)
+    seniority_pts, seniority_note = _seniority_fit(profile, job, job_text,
+                                                   relaxed=relaxed_experience)
     job_level = vocab.detect_seniority(title) or vocab.detect_seniority(job_text[:600])
 
     if seniority_pts == REJECT:
@@ -482,15 +495,18 @@ def _score_llm(profile: dict, job: dict, blacklist: list[str]) -> dict:
 # Public entry point
 # ──────────────────────────────────────────────────────────────
 
-def score_job(profile: dict, job: dict, blacklist: list[str] | None = None) -> dict:
+def score_job(profile: dict, job: dict, blacklist: list[str] | None = None,
+              relaxed_experience: bool = False) -> dict:
     """
     Score a job against a parsed CV profile.
 
     Offline by default. Set LLM_SCORING=true to use Groq/Ollama instead — the
-    realism gate still applies either way.
+    realism gate still applies either way. With ``relaxed_experience`` (the SaaS
+    default), an experience mismatch penalises rather than rejects, so jobs are
+    surfaced based on CV fit regardless of seniority.
     """
     blacklist = blacklist if blacklist is not None else config.BLACKLIST_KEYWORDS
 
     if str(getattr(config, "LLM_SCORING", "false")).lower() == "true":
         return _score_llm(profile, job, blacklist)
-    return score_offline(profile, job, blacklist)
+    return score_offline(profile, job, blacklist, relaxed_experience=relaxed_experience)

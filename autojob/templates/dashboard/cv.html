@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Your CV — AutoJob{% endblock %}
+
+{% block content %}
+<section class="section">
+  <div class="container">
+    {% set active = 'cv' %}{% include "dashboard/_tabs.html" %}
+
+    <div class="card" style="margin-bottom:var(--space-5);">
+      <h2 style="font-size:1.4rem;">Your CV</h2>
+      <p>Upload your CV once. AutoJob reads it to decide which roles to search for and how to
+         tailor each application. PDF, DOCX or TXT, up to 10&nbsp;MB.</p>
+      <form method="post" action="{{ url_for('cv.upload') }}" enctype="multipart/form-data"
+            style="display:flex; gap:var(--space-3); flex-wrap:wrap; align-items:center;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+        <input type="file" name="cv" accept=".pdf,.docx,.txt" required
+               style="max-width:100%;" aria-label="CV file" />
+        <button type="submit" class="btn btn-accent">Upload &amp; parse</button>
+      </form>
+      {% if doc %}
+        <p style="margin-top:var(--space-3); font-size:0.9rem;">
+          Current: <strong>{{ doc.filename }}</strong>
+          ({{ (doc.size_bytes / 1024) | round(1) }} KB)
+        </p>
+      {% endif %}
+    </div>
+
+    {% if profile %}
+      {% if not sendable %}
+      <div class="card" style="border-color:var(--color-destructive); margin-bottom:var(--space-5);">
+        <h3>A few things need fixing before AutoJob can apply</h3>
+        <ul>{% for b in blockers %}<li>{{ b }}</li>{% endfor %}</ul>
+      </div>
+      {% endif %}
+
+      <div class="grid cols-2" style="margin-bottom:var(--space-5);">
+        <div class="card">
+          <h3>What we understood</h3>
+          <p style="margin:0 0 var(--space-2);"><strong>{{ profile.name or '—' }}</strong></p>
+          <p style="margin:0 0 var(--space-2); font-size:0.92rem;">
+            {{ profile.seniority | title }}{% if profile.years_experience %} · {{ profile.years_experience }} yrs{% endif %}</p>
+          <p style="margin:0 0 var(--space-2); font-size:0.92rem;">
+            {{ profile.get('skills', []) | length }} skills ·
+            {{ profile.get('experience', []) | length }} roles ·
+            {{ profile.get('projects', []) | length }} projects</p>
+          {% if profile.get('titles') %}
+          <p style="margin:0; font-size:0.9rem;">Searching for:
+            <strong>{{ profile.titles[:4] | join(', ') }}</strong></p>
+          {% endif %}
+        </div>
+
+        <div class="card">
+          <h3>Contact details</h3>
+          {% for field in ['email', 'phone', 'location', 'linkedin', 'github'] %}
+            {% set c = profile.get('contact_choices', {}).get(field) %}
+            {% if c and c.value %}
+              <p style="margin:0 0 var(--space-2); font-size:0.92rem;">
+                <span style="color:var(--color-fg-soft); text-transform:capitalize;">{{ field }}:</span>
+                {{ c.value }}
+              </p>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+
+      {% if profile.get('ambiguous_fields') %}
+      <div class="card">
+        <h3>Which of these should we use?</h3>
+        <p style="font-size:0.92rem;">Your CV lists more than one value for these — pick the current one.</p>
+        {% for field in profile.ambiguous_fields %}
+          {% set c = profile.contact_choices[field] %}
+          <form method="post" action="{{ url_for('cv.resolve_choice') }}"
+                style="display:flex; gap:var(--space-2); align-items:center; margin-bottom:var(--space-3); flex-wrap:wrap;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+            <input type="hidden" name="field" value="{{ field }}" />
+            <label style="text-transform:capitalize; min-width:80px;">{{ field }}</label>
+            <select name="value" style="min-height:44px; padding:0 var(--space-2); border:1px solid var(--color-border); border-radius:var(--radius); background:var(--color-surface); color:var(--color-fg);">
+              {% for opt in c.options %}<option value="{{ opt }}" {{ 'selected' if opt == c.value }}>{{ opt }}</option>{% endfor %}
+            </select>
+            <button type="submit" class="btn btn-ghost">Save</button>
+          </form>
+        {% endfor %}
+      </div>
+      {% endif %}
+    {% elif doc %}
+      <div class="card"><p style="margin:0;">We couldn't read any text from that file. Try a different export of your CV.</p></div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

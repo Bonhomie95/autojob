@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}AutoJob — upload your CV, we apply for you{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <div class="container">
+    <span class="eyebrow">Your job hunt on autopilot</span>
+    <h1>Upload your CV.<br />We do the rest.</h1>
+    <p class="lead">
+      AutoJob reads your CV, finds roles that actually match, tailors a CV and cover
+      letter for each one, and applies on your behalf — while you get on with your day.
+    </p>
+    <div class="hero-cta">
+      <a class="btn btn-accent" href="{{ url_for('auth.register') }}">Start free with your CV</a>
+      <a class="btn btn-ghost" href="#how">See how it works</a>
+    </div>
+    <p class="hero-note">No credit card. Your CV stays private to your account.</p>
+  </div>
+</section>
+
+<section class="section" id="how">
+  <div class="container">
+    <div class="section-head">
+      <h2>From CV to applied in three steps</h2>
+      <p>You do one thing. AutoJob handles the rest, end to end.</p>
+    </div>
+    <div class="grid cols-3">
+      <div class="card">
+        <span class="step-num">1</span>
+        <h3>Upload your CV</h3>
+        <p>PDF, DOCX or TXT. AutoJob parses your skills, seniority, and the roles you're a fit for — no forms to fill in.</p>
+      </div>
+      <div class="card">
+        <span class="step-num">2</span>
+        <h3>We match &amp; tailor</h3>
+        <p>It scans job boards, scores every posting against your profile, and generates a tailored, ATS-ready application for the strong matches.</p>
+      </div>
+      <div class="card">
+        <span class="step-num">3</span>
+        <h3>We apply &amp; follow up</h3>
+        <p>AutoJob emails the recruiter or fills the portal, then follows up if there's no reply — and stops the moment someone responds.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="features" style="background: var(--color-muted);">
+  <div class="container">
+    <div class="section-head">
+      <h2>Everything a good application needs, automated</h2>
+      <p>Built for people who'd rather be preparing for interviews than copy-pasting cover letters.</p>
+    </div>
+    <div class="grid cols-3">
+      {% set features = [
+        ('CV-driven matching', 'Roles and scoring come straight from your CV — the more it knows, the sharper the matches.', 'M12 2 3 7v10l9 5 9-5V7z'),
+        ('Tailored documents', 'A unique, ATS-optimized CV and cover letter per company — not a generic blast.', 'M9 12h6M9 16h6M4 4h16v16H4z'),
+        ('Recruiter contacts', 'Finds and verifies the right hiring contact so your application reaches a human.', 'M20 21v-2a4 4 0 0 0-3-3.87M4 21v-2a4 4 0 0 1 3-3.87M12 7a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z'),
+        ('Smart follow-ups', 'One polite nudge after a few days — automatically skipped if they already replied.', 'M22 2 11 13M22 2l-7 20-4-9-9-4z'),
+        ('Duplicate guard', 'Never emails the same recruiter twice, and groups multiple roles at one company into a single message.', 'M9 12l2 2 4-4M12 3l7 4v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V7z'),
+        ('You stay in control', 'Review everything from a private dashboard, pause anytime, and approve before anything goes out if you prefer.', 'M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM12 8v4l3 2'),
+      ] %}
+      {% for title, body, path in features %}
+      <div class="card">
+        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{ path }}"/></svg></span>
+        <h3>{{ title }}</h3>
+        <p>{{ body }}</p>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="cta-banner">
+      <h2>Your next role is already posted somewhere.</h2>
+      <p>Let AutoJob find it and apply while you sleep. Upload your CV and see your first matches in minutes.</p>
+      <a class="btn btn-accent" href="{{ url_for('auth.register') }}">Get started free</a>
+    </div>
+  </div>
+</section>
+{% endblock %}

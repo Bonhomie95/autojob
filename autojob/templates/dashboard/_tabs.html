@@ -1,0 +1,6 @@
+<nav class="dash-tabs" aria-label="Dashboard sections">
+  <a href="{{ url_for('main.dashboard') }}" class="{{ 'active' if active == 'overview' }}">Overview</a>
+  <a href="{{ url_for('cv.profile_page') }}" class="{{ 'active' if active == 'cv' }}">Your CV</a>
+  <a href="{{ url_for('jobs.list_jobs') }}" class="{{ 'active' if active == 'jobs' }}">Jobs</a>
+  <a href="{{ url_for('settings.page') }}" class="{{ 'active' if active == 'settings' }}">Settings</a>
+</nav>

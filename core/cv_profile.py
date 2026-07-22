@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core import vocab
-from core.cv_text import extract_cv_text, find_emails
+from core.cv_text import extract_cv_text, find_all, find_emails, find_phones
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +147,35 @@ _GITHUB_RE = re.compile(r"(?:https?://)?(?:www\.)?github\.com/[\w\-]+", re.I)
 _URL_RE = re.compile(r"https?://[^\s<>()\"',]+")
 
 
+def _titlecase_name(name: str) -> str:
+    """
+    Title-case an all-caps name without mangling initials. str.title() turns
+    "AMOS .O. ADEWOPO" into "Amos .O. Adewopo" correctly but "O'BRIEN" into
+    "O'Brien" — which is right — and "MCDONALD" into "Mcdonald", which is the
+    best a rule can do without a name database.
+    """
+    parts = []
+    for word in name.split():
+        stripped = word.strip(".")
+        # A single letter is an initial: keep it upper and keep its dots.
+        parts.append(word.upper() if len(stripped) <= 1 else word.capitalize())
+    return " ".join(parts)
+
+
+def _normalise_for_compare(field: str, value: str) -> str:
+    """
+    Canonical form used to decide whether two contact values are the same
+    thing written differently. "(409)655-2769" and "+1 409 655 2769" are one
+    number, and must not be offered as two choices.
+    """
+    if field == "phone":
+        digits = re.sub(r"\D", "", value)
+        return digits[-10:] if len(digits) >= 10 else digits
+    if field in ("email", "linkedin", "github"):
+        return value.strip().lower().rstrip("/")
+    return " ".join(value.split()).lower()
+
+
 def _extract_name(header: str, email: str) -> str:
     """
     The name is nearly always the first substantial line of the CV, before
@@ -161,8 +190,10 @@ def _extract_name(header: str, email: str) -> str:
         if re.search(r"\d", bare):
             continue
         words = bare.split()
-        if 1 < len(words) <= 5 and all(w[:1].isalpha() for w in words):
-            return bare.title() if bare.isupper() else bare
+        # Middle initials carry punctuation — "AMOS .O. ADEWOPO" is a name,
+        # and requiring every word to begin with a letter rejects it.
+        if 1 < len(words) <= 5 and all(w.strip(".,") [:1].isalpha() for w in words if w.strip(".,")):
+            return _titlecase_name(bare) if bare.isupper() else bare
 
     if email:
         local = email.split("@")[0]
@@ -171,38 +202,111 @@ def _extract_name(header: str, email: str) -> str:
     return ""
 
 
-def _extract_contact(cv_text: str, header: str) -> dict:
-    """
-    Pull contact details from the CV, with .env taking precedence.
+# Contact fields that can legitimately appear more than once in a CV, and the
+# .env key that supplies a value when the CV has none.
+CONTACT_FIELDS: dict[str, str] = {
+    "name":     "CANDIDATE_NAME",
+    "email":    "CANDIDATE_EMAIL",
+    "phone":    "CANDIDATE_PHONE",
+    "linkedin": "CANDIDATE_LINKEDIN",
+    "github":   "CANDIDATE_GITHUB",
+    "location": "CANDIDATE_LOCATION",
+}
 
-    A CV can legitimately contain more than one address — an old one left in
-    a template, a personal address alongside a work one. Guessing which is
-    current risks putting the wrong reply-to on real applications, so an
-    explicit CANDIDATE_* value always wins and any ambiguity is reported.
+
+def _contact_options(cv_text: str, header: str) -> dict[str, list[str]]:
+    """
+    Every contact value the CV offers, per field, in order of appearance.
+
+    Nothing is chosen here. A CV that lists two email addresses — an old one
+    left in a template, a personal one beside a work one — is genuinely
+    ambiguous, and picking for the user risks putting the wrong reply-to on a
+    real application. Collect the candidates; let the choice happen later.
+    """
+    emails = find_emails(cv_text)
+    # Phones live in the header block; scanning the whole document turns
+    # every date and metric in the bullets into a phone-number candidate.
+    phones = find_phones(header) or find_phones(cv_text[:1200])
+
+    return {
+        "name":     [n for n in [_extract_name(header, emails[0] if emails else "")] if n],
+        "email":    emails,
+        "phone":    phones,
+        "linkedin": find_all(_LINKEDIN_RE, cv_text),
+        "github":   find_all(_GITHUB_RE, cv_text),
+        "location": [],
+    }
+
+
+def resolve_contacts(profile: dict, choices: dict[str, str] | None = None) -> dict:
+    """
+    Settle each contact field to a single value, and record what was ambiguous.
+
+    Precedence, highest first:
+      1. The user's saved choice for this CV.
+      2. An explicit CANDIDATE_* value in .env.
+      3. The first value found in the CV.
+
+    A field is "ambiguous" when the CV offered more than one value and the
+    user has not yet chosen. Those get surfaced in the UI rather than guessed
+    at silently.
     """
     from config import config
 
-    emails = find_emails(cv_text)
+    choices = choices or {}
+    options = profile.get("contact_options") or {}
+    ambiguous: list[str] = []
 
-    phone_match = _PHONE_RE.search(header) or _PHONE_RE.search(cv_text)
-    phone = phone_match.group(0).strip() if phone_match else ""
-    # Guard against catching a year range like "2018 - 2023" as a phone number.
-    if phone and len(re.sub(r"\D", "", phone)) < 9:
-        phone = ""
+    for field, env_key in CONTACT_FIELDS.items():
+        found: list[str] = []
+        seen: set[str] = set()
+        for value in (options.get(field) or []):
+            key = _normalise_for_compare(field, value)
+            if key and key not in seen:
+                seen.add(key)
+                found.append(value)
 
-    linkedin = _LINKEDIN_RE.search(cv_text)
-    github = _GITHUB_RE.search(cv_text)
+        # The .env value is a legitimate option even when the CV never says
+        # it — but only if it's genuinely a different value, not the same one
+        # formatted differently.
+        env_value = (getattr(config, env_key, "") or "").strip()
+        if env_value and _normalise_for_compare(field, env_value) not in seen:
+            found.append(env_value)
 
-    cv_email = emails[0] if emails else ""
-    return {
-        "name": config.CANDIDATE_NAME or _extract_name(header, cv_email),
-        "email": config.CANDIDATE_EMAIL or cv_email,
-        "phone": config.CANDIDATE_PHONE or phone,
-        "linkedin": config.CANDIDATE_LINKEDIN or (linkedin.group(0) if linkedin else ""),
-        "github": config.CANDIDATE_GITHUB or (github.group(0) if github else ""),
-        "location": config.CANDIDATE_LOCATION,
-        "emails_in_cv": emails,
-    }
+        chosen = choices.get(field, "")
+        match = next(
+            (v for v in found
+             if _normalise_for_compare(field, v) == _normalise_for_compare(field, chosen)),
+            "",
+        ) if chosen else ""
+
+        if match:
+            profile[field] = match
+        elif env_value:
+            # The .env value may be the same value the CV gives, written
+            # differently. Resolve to the option that's actually in the list,
+            # so the selected value is always one the user can see and click.
+            profile[field] = next(
+                (v for v in found
+                 if _normalise_for_compare(field, v)
+                 == _normalise_for_compare(field, env_value)),
+                env_value,
+            )
+        else:
+            profile[field] = found[0] if found else ""
+
+        if len(found) > 1 and not match:
+            ambiguous.append(field)
+
+        profile.setdefault("contact_choices", {})[field] = {
+            "value": profile[field],
+            "options": found,
+            "chosen": bool(match),
+        }
+
+    profile["ambiguous_fields"] = ambiguous
+    profile["issues"] = validate_profile(profile)
+    return profile
 
 
 # ──────────────────────────────────────────────────────────────
@@ -648,7 +752,7 @@ def build_profile(cv_text: str) -> dict:
     header = sections.get("header", "")
     summary = sections.get("summary", "")
 
-    contact = _extract_contact(cv_text, header)
+    options = _contact_options(cv_text, header)
     experience = _parse_experience(sections.get("experience", ""))
     projects = _parse_projects(sections.get("projects", ""))
     education = _parse_education(sections.get("education", ""))
@@ -667,13 +771,9 @@ def build_profile(cv_text: str) -> dict:
     seniority = _derive_seniority(years, experience)
 
     profile = {
-        "name": contact["name"],
-        "email": contact["email"],
-        "phone": contact["phone"],
-        "linkedin": contact["linkedin"],
-        "github": contact["github"],
-        "location": contact["location"],
-        "emails_in_cv": contact["emails_in_cv"],
+        # Contact fields are filled in by resolve_contacts(), which needs the
+        # user's saved choices and so cannot run at parse time.
+        "contact_options": options,
         "summary": summary.strip(),
         "titles": titles,
         "skills": sorted(skills.keys()),
@@ -684,10 +784,12 @@ def build_profile(cv_text: str) -> dict:
         "projects": projects,
         "education": education,
         "certifications": certifications,
+        # Whether the CV even had a projects section, so validation can tell
+        # "you have no projects" from "your projects failed to parse".
+        "had_projects_section": bool(sections.get("projects", "").strip()),
         "parsed_at": datetime.utcnow().isoformat(),
     }
-    profile["issues"] = validate_profile(profile)
-    return profile
+    return resolve_contacts(profile)
 
 
 def validate_profile(profile: dict) -> list[str]:
@@ -715,18 +817,33 @@ def validate_profile(profile: dict) -> list[str]:
     if not profile.get("experience") and not profile.get("projects"):
         issues.append("BLOCK: no experience or projects parsed — nothing to write about")
 
-    found = profile.get("emails_in_cv") or []
-    if len(found) > 1:
-        issues.append(
-            f"WARN: CV contains {len(found)} different email addresses "
-            f"({', '.join(found[:3])}) — using CANDIDATE_EMAIL from .env. "
-            "Clean the CV or set CANDIDATE_EMAIL explicitly."
-        )
+    # An unresolved email is a blocker, not a warning: sending applications
+    # with the wrong reply-to address is unrecoverable, and with no human in
+    # the loop there is nobody to catch it downstream.
+    for field in profile.get("ambiguous_fields", []):
+        options = (profile.get("contact_choices", {}).get(field, {})
+                   .get("options", []))
+        detail = f"CV gives {len(options)} values for {field} " \
+                 f"({', '.join(options[:3])}) — pick the one to use"
+        issues.append(("BLOCK: " if field == "email" else "WARN: ") + detail)
 
     if profile.get("years_experience", 0) <= 0:
         issues.append("WARN: no dated experience found — seniority is a guess")
+    # Distinguish a parse failure from a CV that simply has no projects. The
+    # first is a bug worth flagging; the second is just a fact about the CV,
+    # and reporting it as a warning trains you to ignore warnings.
     if not profile.get("projects"):
-        issues.append("WARN: no projects section parsed")
+        if profile.get("had_projects_section"):
+            issues.append(
+                "WARN: a projects section was found but no projects could be "
+                "read from it — check its formatting"
+            )
+        else:
+            issues.append(
+                "INFO: no projects section in this CV — applications will lean "
+                "on experience bullets alone. Adding one gives the tailor more "
+                "to match against a posting."
+            )
     if not profile.get("summary"):
         issues.append("WARN: no profile/summary section found")
     if profile.get("years_experience", 0) > 45:
@@ -755,25 +872,31 @@ def get_profile(cv_path: str, cv_text: str = "") -> dict:
     Return the profile for a CV file, parsing only when the file's contents
     have changed since the last parse.
     """
-    from database import load_cv_profile, save_cv_profile
+    from database import load_cv_profile, save_cv_profile, load_cv_choices
 
     digest = cv_hash(cv_path)
+    choices = load_cv_choices(digest)
+
     cached = load_cv_profile(digest)
     if cached:
         logger.info(f"[Profile] Cache hit for {Path(cv_path).name}")
-        return cached
+        # Choices are applied on read, not baked into the cached parse, so
+        # changing one takes effect without re-reading the file.
+        return resolve_contacts(cached, choices)
 
     text = cv_text or extract_cv_text(cv_path)
     if not text.strip():
         logger.error(f"[Profile] No text extracted from {cv_path}")
         return {"issues": ["BLOCK: CV file produced no extractable text"],
-                "skills": [], "titles": [], "projects": [], "experience": []}
+                "skills": [], "titles": [], "projects": [], "experience": [],
+                "contact_options": {}, "ambiguous_fields": []}
 
     logger.info(f"[Profile] Parsing {Path(cv_path).name}…")
     profile = build_profile(text)
     profile["source_file"] = Path(cv_path).name
     profile["cv_hash"] = digest
     save_cv_profile(digest, Path(cv_path).name, profile)
+    profile = resolve_contacts(profile, choices)
 
     logger.info(
         f"[Profile] {profile['name'] or '?'} — {len(profile['skills'])} skills, "

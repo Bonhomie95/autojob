@@ -1,5 +1,10 @@
 .env
+.env.saas
+.env.docker
 *.db
+storage/
+instance/
+migrations/versions/*.pyc
 __pycache__/
 *.pyc
 *.pyo

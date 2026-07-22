@@ -21,6 +21,34 @@
     .profile-head > .profile-id { grid-column: 1 / -1; }
     .profile-head > .profile-id + * { border-left: 0; padding-left: 0; }
   }
+
+  /* Ambiguity resolver — deliberately loud. Nothing else on the page blocks
+     a run, and this does. */
+  .picker-card {
+    background: var(--yellow-dim);
+    border: 1px solid color-mix(in srgb, var(--yellow) 40%, transparent);
+    border-radius: var(--r-md);
+    padding: var(--sp-4);
+  }
+  .pick-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+  .pick {
+    display: inline-flex; align-items: center; gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border-2);
+    background: var(--surface);
+    color: var(--text);
+    font-family: inherit; font-size: var(--step-0);
+    cursor: pointer; transition: all .15s;
+  }
+  .pick:hover { border-color: var(--accent); }
+  .pick-dot {
+    width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid var(--text-mute); flex-shrink: 0;
+    transition: all .15s;
+  }
+  .pick-on { border-color: var(--accent); background: var(--accent-dim); }
+  .pick-on .pick-dot { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 2px var(--surface); }
 </style>
 
 <div class="spread" style="margin-bottom:var(--sp-5);">
@@ -213,10 +241,19 @@ async function loadProfile() {
     }
     src.textContent = '· ' + p.source_file;
 
-    const blockers = (p.blockers || []).map(b =>
+    // Ambiguities get their own resolver, so don't repeat them as prose.
+    const ambigFields = new Set((p.ambiguous || []).map(a => a.field));
+    const isAmbigMsg = (s) => [...ambigFields].some(f => s.includes(`values for ${f}`));
+
+    const blockers = (p.blockers || []).filter(b => !isAmbigMsg(b)).map(b =>
       `<div class="alert alert-error"><span>⛔</span><div>${esc(b)}</div></div>`).join('');
-    const warnings = (p.warnings || []).map(w =>
+    const warnings = (p.warnings || []).filter(w => !isAmbigMsg(w)).map(w =>
       `<div class="alert alert-warn"><span>⚠</span><div>${esc(w)}</div></div>`).join('');
+    // Notes are observations, not problems — styled quietly so real warnings
+    // keep their weight.
+    const notes = (p.notes || []).map(n =>
+      `<div class="alert alert-info"><span>💡</span><div>${esc(n)}</div></div>`).join('');
+    const picker = renderPicker(p.ambiguous || []);
 
     const titles = (p.titles || []).map(t => `<span class="chip chip-on">${esc(t)}</span>`).join('');
     const queries = (p.queries || []).map(q => `<span class="chip">${esc(q)}</span>`).join('');
@@ -246,8 +283,8 @@ async function loadProfile() {
          </div>` : '';
 
     body.innerHTML = `
-      ${blockers}${warnings}
-      <div class="profile-head" style="${blockers || warnings ? 'margin-top:var(--sp-4);' : ''}">
+      ${picker}${blockers}${warnings}${notes}
+      <div class="profile-head" style="${picker || blockers || warnings || notes ? 'margin-top:var(--sp-4);' : ''}">
         <div class="profile-id">
           <div style="font-size:var(--step-2);font-weight:700;letter-spacing:-.02em;">${esc(p.name) || '—'}</div>
           <div class="hint">${esc(p.email)}${p.phone ? ' · ' + esc(p.phone) : ''}</div>
@@ -292,6 +329,68 @@ async function loadProfile() {
   } catch (e) {
     body.innerHTML = `<div class="alert alert-error"><span>✕</span><div>Could not load profile: ${esc(e.message)}</div></div>`;
   }
+}
+
+const FIELD_LABEL = {
+  name: 'Name', email: 'Email address', phone: 'Phone number',
+  linkedin: 'LinkedIn', github: 'GitHub', location: 'Location',
+};
+
+const FIELD_WHY = {
+  email: 'This becomes the reply-to on every application sent.',
+  phone: 'This is printed on your CV and cover letter.',
+  name: 'This is the name at the top of your CV.',
+};
+
+// Your CV says some things twice. Rather than guess — and put the wrong
+// reply-to on real applications — the pipeline stops and asks once. The
+// answer is saved against this CV.
+function renderPicker(ambiguous) {
+  if (!ambiguous.length) return '';
+
+  const blocks = ambiguous.map(a => {
+    const opts = a.options.map(o => `
+      <button class="pick ${o === a.current ? 'pick-on' : ''}"
+              onclick="chooseValue('${esc(a.field)}', this.dataset.v)"
+              data-v="${esc(o)}">
+        <span class="pick-dot"></span>
+        <span class="mono">${esc(o)}</span>
+      </button>`).join('');
+    return `
+      <div style="margin-bottom:var(--sp-4);">
+        <div class="row" style="gap:var(--sp-2);margin-bottom:var(--sp-2);">
+          <strong>${esc(FIELD_LABEL[a.field] || a.field)}</strong>
+          <span class="badge badge-warn">${a.options.length} found</span>
+          <span class="hint">${esc(FIELD_WHY[a.field] || '')}</span>
+        </div>
+        <div class="pick-row">${opts}</div>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="picker-card">
+      <div class="row" style="gap:var(--sp-2);margin-bottom:var(--sp-3);">
+        <span style="font-size:1.1rem;">🔀</span>
+        <strong>Your CV says these twice — which should it use?</strong>
+      </div>
+      <div class="hint" style="margin-bottom:var(--sp-4);">
+        Saved against this CV only. Edit the CV or swap it and you'll be asked again.
+      </div>
+      ${blocks}
+    </div>`;
+}
+
+async function chooseValue(field, value) {
+  const body = document.getElementById('profile-body');
+  body.style.opacity = '.5';
+  try {
+    const r = await postJSON('/api/profile/choose', { field, value });
+    if (r.error) alert(r.error);
+  } catch (e) {
+    alert('Could not save: ' + e.message);
+  }
+  body.style.opacity = '1';
+  loadProfile();
 }
 
 async function reparseProfile() {
