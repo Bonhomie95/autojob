@@ -18,6 +18,7 @@ import logging
 import smtplib
 import ssl
 from email.message import EmailMessage
+from email.utils import make_msgid
 from pathlib import Path
 
 from . import repository as repo
@@ -27,9 +28,14 @@ logger = logging.getLogger(__name__)
 
 
 class SendResult:
-    def __init__(self, ok: bool, message: str):
+    def __init__(self, ok: bool, message: str, message_id: str = ""):
         self.ok = ok
         self.message = message
+        self.message_id = message_id
+
+
+def _domain_of(addr: str) -> str:
+    return addr.rsplit("@", 1)[-1] if "@" in addr else "autojob.local"
 
 
 def smtp_ready(cfg: RuntimeConfig) -> bool:
@@ -85,6 +91,9 @@ def send_application(cfg: RuntimeConfig, job, to_email: str,
     reply_to = cfg.smtp.get("reply_to") or cfg.smtp.get("from")
     if reply_to:
         msg["Reply-To"] = reply_to
+    # A stable Message-ID lets reply/bounce detection match this exact thread.
+    message_id = make_msgid(domain=_domain_of(cfg.smtp["from"]))
+    msg["Message-ID"] = message_id
     msg.set_content(email.get("body", ""))
 
     for path in _attachments(out_dir):
@@ -98,7 +107,7 @@ def send_application(cfg: RuntimeConfig, job, to_email: str,
         logger.warning("SMTP send failed for user %s: %s", cfg.user_id, exc)
         return SendResult(False, f"Send failed: {exc}")
 
-    return SendResult(True, f"Sent to {to_email}")
+    return SendResult(True, f"Sent to {to_email}", message_id=message_id)
 
 
 def _deliver(smtp: dict, msg: EmailMessage) -> None:
@@ -133,6 +142,11 @@ def send_follow_up(cfg: RuntimeConfig, job) -> SendResult:
     msg["To"] = to_email
     msg["Subject"] = f"Following up — {job.title} application"
     msg["Reply-To"] = cfg.smtp.get("reply_to") or cfg.smtp["from"]
+    # Thread the follow-up onto the original application where possible.
+    original_id = getattr(job, "email_message_id", "")
+    if original_id:
+        msg["In-Reply-To"] = original_id
+        msg["References"] = original_id
     name = cfg.smtp.get("from_name") or ""
     msg.set_content(
         f"Hi{(' ' + job.hr_name) if job.hr_name else ''},\n\n"

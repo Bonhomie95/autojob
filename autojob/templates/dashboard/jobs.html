@@ -51,9 +51,17 @@
             <td style="padding:var(--space-3); font-variant-numeric:tabular-nums;">{{ j.score }}</td>
             <td style="padding:var(--space-3);">{{ j.hr_email or j.application_email or '—' }}</td>
             <td style="padding:var(--space-3);">
-              <span style="font-weight:600; color:{{ 'var(--color-accent)' if j.email_status=='sent' else 'var(--color-fg-soft)' }};">
-                {% if j.reply_detected %}replied{% elif j.email_status=='sent' %}sent{% else %}{{ j.status }}{% endif %}
-              </span>
+              {% if j.reply_detected %}
+                <span class="badge badge-success">replied</span>
+              {% elif j.bounced %}
+                <span class="badge badge-danger">bounced</span>
+              {% elif j.email_status == 'sent' %}
+                <span class="badge badge-success">sent{% if j.follow_up_status == 'sent' %} · followed up{% endif %}</span>
+              {% elif j.status == 'done' %}
+                <span class="badge badge-info">ready to send</span>
+              {% else %}
+                <span class="badge">{{ j.status }}</span>
+              {% endif %}
             </td>
           </tr>
           {% endfor %}

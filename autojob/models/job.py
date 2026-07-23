@@ -52,13 +52,20 @@ class Job(db.Model):
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     output_dir: Mapped[str] = mapped_column(Text, default="")
 
+    # email_status: not_sent | sent | bounced | failed
     email_status: Mapped[str] = mapped_column(String(32), default="not_sent")
     email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     email_error: Mapped[str] = mapped_column(Text, default="")
+    # RFC-822 Message-ID we set when sending, so replies/bounces can be matched
+    # to this exact thread rather than guessing by sender address alone.
+    email_message_id: Mapped[str] = mapped_column(String(512), default="", index=True)
+    # True once a bounce (mailer-daemon/postmaster) is detected → not delivered.
+    bounced: Mapped[bool] = mapped_column(Boolean, default=False)
 
     follow_up_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     follow_up_status: Mapped[str] = mapped_column(String(32), default="pending")
     reply_detected: Mapped[bool] = mapped_column(Boolean, default=False)
+    reply_detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     portal_status: Mapped[str] = mapped_column(String(32), default="pending")
     portal_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

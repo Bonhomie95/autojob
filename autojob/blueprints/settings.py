@@ -89,8 +89,8 @@ def sending_consent():
 @login_required
 def save_credentials():
     uid = current_user.id
-    # LLM + enrichment keys.
-    for provider in ("groq", "hunter"):
+    # LLM + enrichment keys (contact discovery + email verification).
+    for provider in ("groq", "hunter", "prospeo", "reoon", "million"):
         val = (request.form.get(provider) or "").strip()
         if val:
             repo.set_credential(uid, provider, val)

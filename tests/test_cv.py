@@ -76,3 +76,19 @@ def test_runtime_config_prefers_user_key(make_user, app):
     cfg = rc.build_runtime_config(a.id)
     assert cfg.groq_keys == ["user-key-1", "user-key-2"]
     assert cfg.managed_llm is False
+
+
+def test_runtime_config_enrichment_managed_and_override(make_user, app):
+    from autojob.services import repository as repo
+    from autojob.services import runtime_config as rc
+
+    a = make_user("enrich@x.com")
+    app.config["MANAGED_PROSPEO_KEYS"] = "mp1,mp2"
+    app.config["MANAGED_REOON_KEYS"] = "mr1"
+    # user brings their own hunter key; prospeo/reoon fall back to managed
+    repo.set_credential(a.id, "hunter", "user-hunter")
+    cfg = rc.build_runtime_config(a.id)
+    assert cfg.hunter_keys == ["user-hunter"]
+    assert cfg.prospeo_keys == ["mp1", "mp2"]
+    assert cfg.reoon_keys == ["mr1"]
+    assert cfg.managed_enrichment is True

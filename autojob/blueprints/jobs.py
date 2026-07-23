@@ -88,7 +88,8 @@ def send(job_id: str):
     result = mailer.send_application(cfg, job, to_email, skip_dedup=True)
     if result.ok:
         repo.update_job(current_user.id, job_id, email_status="sent",
-                        email_sent_at=datetime.now(UTC), email_error="", status="applied")
+                        email_sent_at=datetime.now(UTC), email_message_id=result.message_id,
+                        email_error="", status="applied")
         flash(result.message, "success")
     else:
         repo.update_job(current_user.id, job_id, email_status="failed", email_error=result.message)

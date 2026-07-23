@@ -49,11 +49,15 @@ class RuntimeConfig:
     # Credentials (decrypted, in memory only)
     groq_keys: list[str] = field(default_factory=list)
     hunter_keys: list[str] = field(default_factory=list)
+    prospeo_keys: list[str] = field(default_factory=list)
+    reoon_keys: list[str] = field(default_factory=list)
+    million_keys: list[str] = field(default_factory=list)
     smtp: dict = field(default_factory=dict)
     imap: dict = field(default_factory=dict)
 
     # Whether the platform is supplying managed keys the user didn't set.
     managed_llm: bool = False
+    managed_enrichment: bool = False
 
 
 def _split(csv: str) -> list[str]:
@@ -74,7 +78,21 @@ def build_runtime_config(user_id: str) -> RuntimeConfig:
         groq = _managed_pool("MANAGED_GROQ_KEYS")
         managed_llm = bool(groq)
 
-    hunter = _split(repo.get_credential(user_id, "hunter"))
+    # Enrichment providers: user's own key first, else the managed pool. This
+    # is what lets a user find recruiter contacts without signing up for
+    # Hunter/Prospeo/Reoon themselves.
+    def _enrichment(provider: str, managed_key: str) -> tuple[list[str], bool]:
+        keys = _split(repo.get_credential(user_id, provider))
+        if keys:
+            return keys, False
+        managed = _managed_pool(managed_key)
+        return managed, bool(managed)
+
+    hunter, m1 = _enrichment("hunter", "MANAGED_HUNTER_KEYS")
+    prospeo, m2 = _enrichment("prospeo", "MANAGED_PROSPEO_KEYS")
+    reoon, m3 = _enrichment("reoon", "MANAGED_REOON_KEYS")
+    million, m4 = _enrichment("million", "MANAGED_MILLION_KEYS")
+    managed_enrichment = any((m1, m2, m3, m4))
 
     smtp = {}
     smtp_secret = repo.get_credential(user_id, "smtp")
@@ -106,9 +124,13 @@ def build_runtime_config(user_id: str) -> RuntimeConfig:
         schedule_cron=s.schedule_cron,
         groq_keys=groq,
         hunter_keys=hunter,
+        prospeo_keys=prospeo,
+        reoon_keys=reoon,
+        million_keys=million,
         smtp=smtp,
         imap=imap,
         managed_llm=managed_llm,
+        managed_enrichment=managed_enrichment,
     )
 
 

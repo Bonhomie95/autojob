@@ -68,9 +68,9 @@ def use_runtime(cfg: RuntimeConfig, profile: dict):
         saved_df = _swap_corpus()
         try:
             legacy_config.HUNTER_API_KEYS = list(cfg.hunter_keys)
-            legacy_config.PROSPEO_API_KEYS = []
-            legacy_config.REOON_API_KEYS = []
-            legacy_config.MILLION_VERIFIER_API_KEYS = []
+            legacy_config.PROSPEO_API_KEYS = list(cfg.prospeo_keys)
+            legacy_config.REOON_API_KEYS = list(cfg.reoon_keys)
+            legacy_config.MILLION_VERIFIER_API_KEYS = list(cfg.million_keys)
             legacy_config.CONTACT_SEARCH_ENABLED = True
             legacy_config.MIN_SALARY = cfg.min_salary
             legacy_config.REMOTE_ONLY = cfg.remote_only

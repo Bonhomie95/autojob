@@ -264,6 +264,7 @@ def run_discovery(user_id: str, run_id: str, max_per_board: int = 40) -> dict:
                         from datetime import UTC, datetime
                         repo.update_job(user_id, jid, email_status="sent",
                                         email_sent_at=datetime.now(UTC),
+                                        email_message_id=result.message_id,
                                         email_error="", status="applied")
                         emails += 1
                         emit(f"  📤 {result.message}")

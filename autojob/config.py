@@ -83,6 +83,10 @@ class BaseConfig:
     # Server-side keys used when a user hasn't supplied their own, so they can
     # "just upload a CV". Comma-separated. Leave empty to require BYO keys.
     MANAGED_GROQ_KEYS = os.getenv("MANAGED_GROQ_KEYS", "")
+    MANAGED_HUNTER_KEYS = os.getenv("MANAGED_HUNTER_KEYS", "")
+    MANAGED_PROSPEO_KEYS = os.getenv("MANAGED_PROSPEO_KEYS", "")
+    MANAGED_REOON_KEYS = os.getenv("MANAGED_REOON_KEYS", "")
+    MANAGED_MILLION_KEYS = os.getenv("MANAGED_MILLION_KEYS", "")
 
     # ── Security ──────────────────────────────────────────────────
     SESSION_COOKIE_HTTPONLY = True
