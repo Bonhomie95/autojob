@@ -7,9 +7,11 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
-# curl is used by the healthcheck; build-essential for any wheels that need it.
+# curl for the healthcheck; build-essential for wheels; tesseract-ocr so
+# scanned/image-only CVs can be read via OCR.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential curl \
+    && apt-get install -y --no-install-recommends \
+        build-essential curl tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

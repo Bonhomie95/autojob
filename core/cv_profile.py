@@ -887,7 +887,12 @@ def get_profile(cv_path: str, cv_text: str = "") -> dict:
     text = cv_text or extract_cv_text(cv_path)
     if not text.strip():
         logger.error(f"[Profile] No text extracted from {cv_path}")
-        return {"issues": ["BLOCK: CV file produced no extractable text"],
+        return {"issues": [
+                    "BLOCK: Couldn't read any text from this CV. It looks like a "
+                    "scanned or image-only PDF that even OCR couldn't read. Try "
+                    "exporting it as a text-based PDF (File → Save as PDF from Word/"
+                    "Google Docs), or upload a .docx instead."
+                ],
                 "skills": [], "titles": [], "projects": [], "experience": [],
                 "contact_options": {}, "ambiguous_fields": []}
 

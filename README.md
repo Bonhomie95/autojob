@@ -18,6 +18,16 @@
 
 Here's everything these passes added or changed, and a few honest notes.
 
+**"Works with any CV" fix (Joseph.pdf → "no extractable text"):**
+
+That CV was a scanned / image-only PDF, and the parser only tried one text engine.
+Now `core/cv_text.py` tries several: **pdfplumber → PyMuPDF → pypdf**, and if none find real
+text it falls back to **OCR** (PyMuPDF rasterises each page, Tesseract reads it) — so scanned
+CVs work too. I tested a text PDF *and* a synthetic scanned PDF through both the extractor and
+the full profile parse (name/title/skills all came out), and confirmed OCR runs **inside the
+Docker image** (added `tesseract-ocr`). If a PDF is so degraded that even OCR fails, the message
+now tells you what to do (export a text-based PDF, or upload a `.docx`).
+
 **Render deploy fix (your crash log):**
 
 Your Render logs showed `CREDENTIAL_ENCRYPTION_KEY is not set` — because the repo's

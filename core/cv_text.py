@@ -143,7 +143,12 @@ def _clean(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", result).strip()
 
 
-def _extract_pdf(path: str) -> str:
+def _has_real_text(text: str) -> bool:
+    """Enough letters to be an actual CV, not a stray glyph or two."""
+    return len(re.findall(r"[A-Za-z]", text or "")) >= 40
+
+
+def _pdf_pdfplumber(path: str) -> str:
     import pdfplumber  # type: ignore
 
     pages: list[str] = []
@@ -156,11 +161,87 @@ def _extract_pdf(path: str) -> str:
             # problem is purely vertical, and tightening x splits
             # letter-spaced headings — a name set with wide tracking comes out
             # as "A M O S . O . A D E W O P O" and stops being a name.
-            text = page.extract_text(y_tolerance=1) or ""
-            pages.append(text)
+            pages.append(page.extract_text(y_tolerance=1) or "")
+    return "\n".join(_strip_repeated_lines(pages))
 
-    pages = _strip_repeated_lines(pages)
-    return "\n".join(pages)
+
+def _pdf_pymupdf(path: str) -> str:
+    """PyMuPDF's text engine — often recovers text pdfplumber can't decode."""
+    import fitz  # type: ignore  (pymupdf)
+
+    with fitz.open(path) as doc:
+        pages = [page.get_text("text") or "" for page in doc]
+    return "\n".join(_strip_repeated_lines(pages))
+
+
+def _pdf_pypdf(path: str) -> str:
+    from pypdf import PdfReader  # type: ignore
+
+    reader = PdfReader(path)
+    pages = [(pg.extract_text() or "") for pg in reader.pages]
+    return "\n".join(_strip_repeated_lines(pages))
+
+
+def _pdf_ocr(path: str) -> str:
+    """
+    Last resort for scanned / image-only CVs: rasterise each page with
+    PyMuPDF (no external poppler needed) and OCR it with Tesseract.
+
+    Requires the `tesseract` binary (installed in the Docker image). If it's
+    missing, this returns "" and the caller surfaces a helpful message rather
+    than crashing.
+    """
+    try:
+        import io
+
+        import fitz  # type: ignore
+        import pytesseract  # type: ignore
+        from PIL import Image  # type: ignore
+    except Exception as e:
+        logger.warning(f"[CV] OCR libraries unavailable: {e}")
+        return ""
+
+    try:
+        pages: list[str] = []
+        with fitz.open(path) as doc:
+            for page in doc:
+                pix = page.get_pixmap(dpi=220)
+                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                pages.append(pytesseract.image_to_string(img) or "")
+        text = "\n".join(pages)
+        if _has_real_text(text):
+            logger.info(f"[CV] OCR recovered {len(text)} chars from scanned PDF")
+        return text
+    except pytesseract.TesseractNotFoundError:
+        logger.warning("[CV] Tesseract binary not installed — cannot OCR scanned PDF")
+        return ""
+    except Exception as e:
+        logger.warning(f"[CV] OCR failed: {e}")
+        return ""
+
+
+def _extract_pdf(path: str) -> str:
+    """
+    Extract text from a PDF, trying several engines so it works with as many
+    CVs as possible: fast text engines first, then OCR for scanned/image PDFs.
+    """
+    for name, engine in (
+        ("pdfplumber", _pdf_pdfplumber),
+        ("pymupdf", _pdf_pymupdf),
+        ("pypdf", _pdf_pypdf),
+    ):
+        try:
+            text = engine(path)
+        except Exception as e:
+            logger.debug(f"[CV] {name} extractor errored: {e}")
+            continue
+        if _has_real_text(text):
+            logger.info(f"[CV] Extracted text via {name}")
+            return text
+
+    # Nothing readable as embedded text — likely a scanned/image PDF.
+    logger.info("[CV] No embedded text found — attempting OCR…")
+    return _pdf_ocr(path)
 
 
 def _extract_docx(path: str) -> str:
