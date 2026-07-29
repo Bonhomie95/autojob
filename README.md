@@ -18,6 +18,33 @@
 
 Here's everything these passes added or changed, and a few honest notes.
 
+**Render deploy fix (your crash log):**
+
+Your Render logs showed `CREDENTIAL_ENCRYPTION_KEY is not set` — because the repo's
+`Dockerfile` was building the **multi-tenant SaaS package** (`autojob/`, which needs
+`SECRET_KEY`, `CREDENTIAL_ENCRYPTION_KEY`, Redis…), not the single-user app you actually want.
+No amount of env vars would have fixed that. Changes:
+
+- **`Dockerfile` now runs the single-user app** (`gunicorn wsgi:app`), honours Render's `$PORT`,
+  uses one worker + threads (needed for the live log stream and scheduler), and runs as root so
+  it can write uploaded CVs to Render's root-owned disk. Added a `/healthz` endpoint.
+- **`render.yaml` builds from the Dockerfile** (`runtime: docker`) so what deploys is exactly
+  what you can test locally — it can never accidentally boot the SaaS again.
+- **I built and ran it in Docker locally** — an app container + a Postgres container on a shared
+  network, the same shape as Render. Verified: `/healthz` 200, the dashboard loads, and saving
+  settings persisted into the Postgres container. So it's proven before you redeploy.
+- **`DATABASE_URL` note:** you had pasted Render's *internal* DB URL (`dpg-…-a`) into your local
+  `.env` — that only resolves inside Render and breaks local runs. It's blanked locally now;
+  Render injects the real one via `render.yaml`, so you never set it by hand. (`SECRET_KEY` and
+  `CREDENTIAL_ENCRYPTION_KEY` are **not** needed by this app — they were the SaaS's.)
+
+To reproduce locally any time:
+
+```bash
+docker build -t autojob .
+docker run -p 8080:8080 -e PORT=8080 autojob    # then open http://localhost:8080
+```
+
 **Major revamp round (your feedback — "settings shouldn't live in .env, and it won't work on Render"):**
 
 You were right that it needed more than surface fixes. What changed:

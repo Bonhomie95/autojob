@@ -1,15 +1,13 @@
-# ── AutoJob SaaS image ───────────────────────────────────────
-# One image runs any role (web / worker / beat); the compose file picks the
-# command. Slim base + non-root user + a healthcheck for orchestration.
+# ── AutoJob (single-user app) image ──────────────────────────
+# Runs the no-sign-up dashboard (root app.py / wsgi.py) — NOT the multi-tenant
+# SaaS package in autojob/. This is what Render builds and runs.
 FROM python:3.13-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    APP_ENV=production
+    PIP_NO_CACHE_DIR=1
 
-# System deps: libreoffice is optional (PDF rendering); kept out of the base
-# image to stay small — add it in a build arg if you need server-side PDFs.
+# curl is used by the healthcheck; build-essential for any wheels that need it.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential curl \
     && rm -rf /var/lib/apt/lists/*
@@ -21,17 +19,21 @@ RUN pip install --upgrade pip && pip install -r requirements.txt gunicorn
 
 COPY . .
 
-# Run as an unprivileged user.
-RUN useradd --create-home --uid 10001 appuser \
-    && mkdir -p /app/storage \
-    && chown -R appuser:appuser /app
-USER appuser
+# Writable dirs for uploaded CVs, generated packages, and the local SQLite
+# fallback. On Render these point at the mounted disk (/var/data).
+RUN mkdir -p /app/input /app/output /var/data
 
-EXPOSE 9000
+# NOTE: runs as root on purpose. Render mounts the persistent disk as
+# root-owned, so a non-root user could not write uploaded CVs / generated
+# packages to /var/data. This is a single-user personal tool, so root in the
+# container is an acceptable, reliable trade-off.
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://localhost:9000/healthz || exit 1
+# Render injects $PORT; default to 10000 for a plain `docker run`.
+ENV PORT=10000
+EXPOSE 10000
 
-# Default command runs the web server; override for worker/beat in compose.
-CMD ["gunicorn", "autojob.wsgi:app", "--bind", "0.0.0.0:9000", \
-     "--workers", "4", "--timeout", "120", "--access-logfile", "-"]
+# Single worker (the live log stream, in-process run lock, and APScheduler all
+# assume one process); threads handle the concurrent SSE connections.
+# Shell form so ${PORT} is expanded at runtime.
+CMD gunicorn wsgi:app --bind 0.0.0.0:${PORT} --workers 1 --threads 8 \
+    --timeout 120 --access-logfile - --error-logfile -

@@ -39,8 +39,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.secret_key = os.urandom(24)
+# Optional: set SECRET_KEY to keep sessions stable across restarts. This is a
+# single-user, no-login tool, so a random per-process key is fine by default.
+app.secret_key = os.getenv("SECRET_KEY") or os.urandom(24)
 app.register_blueprint(settings_bp)
+
+
+@app.route("/healthz")
+def healthz():
+    """Lightweight liveness probe for Docker / Render health checks."""
+    return jsonify({"status": "ok"}), 200
 
 
 @app.context_processor

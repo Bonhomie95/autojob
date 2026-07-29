@@ -38,6 +38,9 @@ services:
 
   web:
     build: .
+    # The image's default command runs the single-user app; this compose stack
+    # is the multi-tenant SaaS, so point it explicitly at the SaaS entrypoint.
+    command: gunicorn autojob.wsgi:app --bind 0.0.0.0:9000 --workers 4 --timeout 120 --access-logfile -
     env_file:
       - path: .env.docker
         required: false

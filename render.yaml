@@ -12,11 +12,13 @@ databases:
 services:
   - type: web
     name: autojob
-    runtime: python
+    # Build from the Dockerfile so what Render runs is exactly what you can test
+    # locally with `docker build` — and so it can never accidentally boot the
+    # multi-tenant SaaS package. The Dockerfile CMD runs the single-user app.
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     plan: starter        # "free" also works but sleeps after inactivity
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn wsgi:app --workers 1 --threads 8 --timeout 120 --bind 0.0.0.0:$PORT
-    healthCheckPath: /
+    healthCheckPath: /healthz
     autoDeploy: true
     # The disk holds uploaded CVs and generated application packages. Everything
     # else — job history, the "don't apply twice" memory, AND all your settings
