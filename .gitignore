@@ -1,6 +1,9 @@
 .env
 .env.saas
 .env.docker
+.env.backup*
+autojob.env
+/var/data/
 *.db
 storage/
 instance/

@@ -156,65 +156,88 @@ def _check_catchup(cron_kwargs: dict, timezone: str):
 
 def start_scheduler():
     """
-    Start the APScheduler background scheduler.
-    Safe to call multiple times — only starts once.
+    Start the APScheduler background scheduler and apply the current schedule.
+    Safe to call multiple times — only creates the scheduler once. The cron job
+    itself is added/removed by _apply_schedule so the dashboard can turn
+    automation on/off and change the time without a restart.
     """
     global _scheduler
 
     with _scheduler_lock:
-        if _scheduler is not None:
-            return
+        if _scheduler is None:
+            try:
+                from apscheduler.schedulers.background import BackgroundScheduler
+            except ImportError:
+                logger.warning(
+                    "[Scheduler] APScheduler not installed — auto-schedule disabled.\n"
+                    "  Fix: pip install apscheduler"
+                )
+                return
+            from config import config
 
-        try:
-            from apscheduler.schedulers.background import BackgroundScheduler
-            from apscheduler.triggers.cron import CronTrigger
-        except ImportError:
-            logger.warning(
-                "[Scheduler] APScheduler not installed — auto-schedule disabled.\n"
-                "  Fix: pip install apscheduler"
-            )
-            return
+            tz = config.TIMEZONE or "UTC"
+            _scheduler = BackgroundScheduler(timezone=tz)
+            _scheduler.start()
 
-        from config import config
+    _apply_schedule()
+
+
+def _apply_schedule():
+    """
+    Read the current config and add / replace / remove the pipeline cron job so
+    the live schedule matches what the dashboard shows. Called on startup and
+    whenever schedule settings are saved.
+    """
+    global _scheduler
+    if _scheduler is None:
+        return
+
+    try:
+        from apscheduler.triggers.cron import CronTrigger
+    except ImportError:
+        return
+
+    from config import config
+
+    with _scheduler_lock:
+        existing = _scheduler.get_job("pipeline_run")
 
         if not config.SCHEDULE_ENABLED:
-            logger.info(
-                "[Scheduler] SCHEDULE_ENABLED=false — scheduler not started. "
-                "Set SCHEDULE_ENABLED=true in .env to enable."
-            )
+            if existing:
+                _scheduler.remove_job("pipeline_run")
+                logger.info("[Scheduler] Auto-run disabled — cron job removed.")
+            else:
+                logger.info("[Scheduler] Auto-run disabled — nothing scheduled.")
             return
 
-        tz           = config.TIMEZONE or "UTC"
-        cron_kwargs  = _parse_cron(config.SCHEDULE_CRON)
-
-        _scheduler = BackgroundScheduler(timezone=tz)
+        tz = config.TIMEZONE or "UTC"
+        cron_kwargs = _parse_cron(config.SCHEDULE_CRON)
         _scheduler.add_job(
             _scheduled_job,
             trigger=CronTrigger(**cron_kwargs, timezone=tz),
             id="pipeline_run",
             name="Scheduled Pipeline Run",
             replace_existing=True,
-            # 1-hour grace window — if the app was slow/busy at fire time,
-            # still run the job rather than silently skipping it
             misfire_grace_time=3600,
-            # Coalesce multiple missed fires into one
             coalesce=True,
             max_instances=1,
         )
-        _scheduler.start()
 
-        next_run = get_next_run()
-        logger.info(
-            f"[Scheduler] ✅ Started — cron: '{config.SCHEDULE_CRON}' "
-            f"timezone: {tz} | next run: {next_run}"
-        )
+    logger.info(
+        f"[Scheduler] ✅ Auto-run every '{config.SCHEDULE_CRON}' "
+        f"({config.TIMEZONE or 'UTC'}) | next run: {get_next_run()}"
+    )
 
-        # NOTE: catch-up-on-boot is intentionally disabled. Starting/restarting
-        # the app from the terminal (e.g. after a code change) should never
-        # silently kick off a pipeline run — only the cron tick or an explicit
-        # dashboard "Run" click should start one. Re-enable by uncommenting
-        # the line below if you actually want missed runs to fire on boot.
-        # _check_catchup(cron_kwargs, tz)
+
+def reschedule():
+    """Re-read settings and update the live cron job. Call after saving settings."""
+    from config import config
+
+    config.reload()
+    if _scheduler is None:
+        start_scheduler()
+    else:
+        _apply_schedule()
 
 
 def stop_scheduler():

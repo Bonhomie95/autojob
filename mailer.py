@@ -15,8 +15,11 @@ Improvements in this version:
 
 import base64
 import time
+import smtplib
 import logging
 import threading
+from email.message import EmailMessage
+from email.utils import formataddr
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -235,8 +238,77 @@ def _send_smtp2go(provider: dict, to_email: str, subject: str, body: str,
     return False, f"SMTP2GO {resp.status_code}: {resp.text[:300]}"
 
 
+def _smtp_connect(provider: dict, timeout: int = 30) -> smtplib.SMTP:
+    """
+    Open an authenticated SMTP connection for a real-mailbox provider
+    (Gmail app password or a generic SMTP host). Caller must close it.
+    Raises on any connection / auth failure.
+    """
+    host = provider["host"]
+    port = int(provider.get("port", 587))
+    if provider.get("ssl") or port == 465:
+        server = smtplib.SMTP_SSL(host, port, timeout=timeout)
+    else:
+        server = smtplib.SMTP(host, port, timeout=timeout)
+        server.ehlo()
+        if provider.get("tls", True):
+            server.starttls()
+            server.ehlo()
+    server.login(provider["user"], provider["password"])
+    return server
+
+
+def _send_smtp(provider: dict, to_email: str, subject: str, body: str,
+               attachments: list[Path]) -> tuple[bool, str]:
+    reply_to = getattr(config, "SMTP_REPLY_TO", "") or config.CANDIDATE_EMAIL or provider["from"]
+    from_name = provider.get("from_name") or config.CANDIDATE_NAME
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = formataddr((from_name, provider["from"]))
+    msg["To"] = to_email
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    msg.set_content(body)
+    if getattr(config, "SMTP_FORMAT", "plain") == "mixed":
+        msg.add_alternative(_body_to_html(body), subtype="html")
+
+    for path in attachments:
+        try:
+            maintype, subtype = _MIME_BY_EXT.get(path.suffix.lower(), ("application", "octet-stream"))
+            msg.add_attachment(
+                path.read_bytes(), maintype=maintype, subtype=subtype, filename=path.name
+            )
+        except Exception as e:
+            logger.warning(f"[Mailer] Could not attach {path.name}: {e}")
+
+    try:
+        server = _smtp_connect(provider)
+    except smtplib.SMTPAuthenticationError as e:
+        return False, (
+            "SMTP login rejected. For Gmail, use a 16-character App Password "
+            "(not your normal password) with 2-Step Verification on. "
+            f"Server said: {e.smtp_error.decode(errors='ignore') if hasattr(e, 'smtp_error') else e}"
+        )
+    except Exception as e:
+        return False, f"SMTP connection failed: {e}"
+
+    try:
+        server.send_message(msg)
+        return True, f"Sent via {provider.get('label', 'SMTP')} ({provider['host']})"
+    except Exception as e:
+        return False, f"SMTP send failed: {e}"
+    finally:
+        try:
+            server.quit()
+        except Exception:
+            pass
+
+
 def _send_via_provider(provider: dict, to_email: str, subject: str, body: str,
                        attachments: list[Path]) -> tuple[bool, str]:
+    if provider["name"] == "smtp":
+        return _send_smtp(provider, to_email, subject, body, attachments)
     if provider["name"] == "brevo":
         return _send_brevo(provider, to_email, subject, body, attachments)
     if provider["name"] == "smtp2go":
@@ -631,7 +703,50 @@ def send_for_job(job: dict, emit=None) -> bool:
 # ──────────────────────────────────────────────────────────
 
 def test_smtp() -> tuple[bool, str]:
-    if not smtp_configured():
-        return False, "Email API settings incomplete - fill BREVO_API_KEY or SMTP2GO_API_KEY and a verified from address"
-    providers = [p.get("name") for p in getattr(config, "EMAIL_PROVIDERS", []) if p.get("name") not in _dead_providers]
-    return True, f"✅ Email API provider(s) configured: {', '.join(providers)}"
+    """
+    Verify the configured sender actually works.
+
+    For real SMTP / Gmail this opens a live connection and logs in, so a
+    wrong password or blocked port fails here — before any application is
+    ever sent. For API providers (Brevo/SMTP2GO) it confirms credentials
+    are present (the API itself is only reachable at send time).
+    """
+    config.reload()
+    providers = getattr(config, "EMAIL_PROVIDERS", [])
+    if not providers:
+        return False, (
+            "No email sender configured yet. Add a Gmail App Password or SMTP "
+            "credentials below and test again."
+        )
+
+    # Prefer testing a real SMTP/Gmail sender with a live login.
+    smtp_providers = [p for p in providers if p.get("name") == "smtp"]
+    if smtp_providers:
+        provider = smtp_providers[0]
+        label = provider.get("label", "SMTP")
+        try:
+            server = _smtp_connect(provider, timeout=20)
+            server.quit()
+            return True, (
+                f"✅ Connected and logged in to {label} "
+                f"({provider['host']}:{provider['port']}) as {provider['user']}. "
+                "You're ready to send."
+            )
+        except smtplib.SMTPAuthenticationError as e:
+            detail = e.smtp_error.decode(errors="ignore") if hasattr(e, "smtp_error") else str(e)
+            hint = (
+                " Gmail needs a 16-character App Password with 2-Step Verification on — "
+                "your normal password will not work."
+                if label == "Gmail" else ""
+            )
+            return False, f"❌ Login rejected by {label}: {detail}.{hint}"
+        except (smtplib.SMTPConnectError, OSError) as e:
+            return False, (
+                f"❌ Could not reach {label} at {provider['host']}:{provider['port']} — "
+                f"check the host/port. ({e})"
+            )
+        except Exception as e:
+            return False, f"❌ {label} test failed: {e}"
+
+    names = ", ".join(p.get("label", p.get("name")) for p in providers)
+    return True, f"✅ Email API provider(s) configured: {names}"

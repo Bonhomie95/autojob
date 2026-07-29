@@ -58,14 +58,33 @@
   </div>
   <div class="row">
     <button id="followup-btn" class="btn btn-ghost" onclick="startFollowup()">✉ Follow-ups</button>
-    <button id="run-btn" class="btn btn-primary btn-lg" onclick="startRun()">▶ Run pipeline</button>
+    <button id="run-btn" class="btn btn-primary btn-lg" onclick="startRun()" disabled title="Connect and test your email first">▶ Run &amp; apply</button>
   </div>
+</div>
+<p id="run-gate-note" class="hint" style="margin:calc(-1 * var(--sp-3)) 0 var(--sp-5);color:var(--yellow);">
+  🔒 Connect and test your email below to unlock the run.
+</p>
+
+<!-- ══ STEP 1 — Upload your CV ══ -->
+<div class="card" id="cv-card" style="margin-bottom:var(--sp-4);">
+  <div class="card-head">
+    <div class="card-title">1 · Upload your CV</div>
+    <span class="hint">PDF, DOCX or TXT</span>
+  </div>
+  <div class="dropzone" id="dropzone" onclick="document.getElementById('cv-input').click()" style="padding:var(--sp-6);">
+    <div style="font-size:2rem;">⬆️</div>
+    <div style="font-weight:700;font-size:var(--step-1);margin-top:var(--sp-1);">Drop your CV here, or click to choose a file</div>
+    <div class="hint">It's read instantly — you'll see exactly what we understood below. Nothing is sent yet.</div>
+  </div>
+  <input type="file" id="cv-input" accept=".docx,.pdf,.txt" class="hidden" onchange="uploadCV(this)">
+  <div id="cv-status" class="hint" style="margin-top:var(--sp-2);"></div>
+  <div id="cv-list" class="stack" style="gap:var(--sp-2); margin-top:var(--sp-4);"></div>
 </div>
 
 <!-- ══ CV Profile — what the pipeline understands about you ══ -->
 <div class="card" id="profile-card" style="margin-bottom:var(--sp-4);">
   <div class="card-head">
-    <div class="card-title">👤 Your profile <span class="hint" id="profile-src"></span></div>
+    <div class="card-title">📄 What we read from your CV <span class="hint" id="profile-src"></span></div>
     <div class="row">
       <button class="btn btn-ghost btn-sm" onclick="reparseProfile()">↻ Re-read CV</button>
     </div>
@@ -73,6 +92,15 @@
   <div id="profile-body">
     <div class="hint"><span class="spin">◜</span> Reading your CV…</div>
   </div>
+</div>
+
+<!-- ══ Email sender setup — the gate before any run ══ -->
+<div class="card" id="email-card" style="margin-bottom:var(--sp-4);">
+  <div class="card-head">
+    <div class="card-title">2 · Connect your email <span class="hint" id="email-src"></span></div>
+    <span id="email-badge"></span>
+  </div>
+  <div id="email-body"><div class="hint"><span class="spin">◜</span> Checking email setup…</div></div>
 </div>
 
 <!-- ══ Live console ══ -->
@@ -120,41 +148,24 @@
   </div>
 </div>
 
-<!-- ══ CVs / Automation / Keys ══ -->
+<!-- ══ Automation / Keys ══ -->
 <div class="grid grid-2" style="margin-bottom:var(--sp-4);">
-
   <div class="card">
-    <div class="card-head"><div class="card-title">📄 CV versions</div></div>
-    <div id="cv-list" class="stack" style="gap:var(--sp-2); margin-bottom:var(--sp-4);">
-      <div class="hint">Loading…</div>
+    <div class="card-head"><div class="card-title">⏰ Automation</div></div>
+    <div id="sched-body"><div class="hint">Loading…</div></div>
+    <hr class="sep">
+    <div class="row">
+      <button class="btn btn-ghost btn-sm" onclick="testTelegram()">🔔 Test Telegram</button>
+      <span id="tg-status" class="hint"></span>
     </div>
-    <div class="dropzone" id="dropzone" onclick="document.getElementById('cv-input').click()">
-      <div style="font-size:1.4rem;">＋</div>
-      <div style="font-weight:600;">Drop a CV or click to upload</div>
-      <div class="hint">PDF, DOCX or TXT · re-parsed automatically</div>
-    </div>
-    <input type="file" id="cv-input" accept=".docx,.pdf,.txt" class="hidden" onchange="uploadCV(this)">
-    <div id="cv-status" class="hint" style="margin-top:var(--sp-2);"></div>
   </div>
 
-  <div class="stack">
-    <div class="card">
-      <div class="card-head"><div class="card-title">⏰ Automation</div></div>
-      <div id="sched-body"><div class="hint">Loading…</div></div>
-      <hr class="sep">
-      <div class="row">
-        <button class="btn btn-ghost btn-sm" onclick="testTelegram()">🔔 Test Telegram</button>
-        <span id="tg-status" class="hint"></span>
-      </div>
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">🔑 API keys</div>
+      <button class="btn btn-ghost btn-sm" onclick="loadKeys()">↻</button>
     </div>
-
-    <div class="card">
-      <div class="card-head">
-        <div class="card-title">🔑 API keys</div>
-        <button class="btn btn-ghost btn-sm" onclick="loadKeys()">↻</button>
-      </div>
-      <div id="keys-body"><div class="hint">Loading…</div></div>
-    </div>
+    <div id="keys-body"><div class="hint">Loading…</div></div>
   </div>
 </div>
 
@@ -401,6 +412,191 @@ async function reparseProfile() {
 }
 
 // ══════════════════════════════════════════════════════
+// Email sender setup — the gate before any run
+// ══════════════════════════════════════════════════════
+let emailReady = false;
+let emailMode = 'gmail';
+
+async function loadEmail() {
+  try {
+    const s = await getJSON('/api/email/status');
+    renderEmail(s);
+  } catch (e) {
+    document.getElementById('email-body').innerHTML =
+      `<div class="alert alert-error"><span>✕</span><div>Could not load email status: ${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderEmail(s) {
+  emailReady = !!s.verified;
+  const badge = document.getElementById('email-badge');
+  const src = document.getElementById('email-src');
+  const body = document.getElementById('email-body');
+
+  if (s.verified) {
+    badge.innerHTML = '<span class="badge badge-ok">✓ Connected</span>';
+    src.textContent = s.from ? '· ' + s.from : '';
+    body.innerHTML = `
+      <div class="alert alert-success" style="margin-bottom:var(--sp-3);">
+        <span>✅</span>
+        <div>Connected as <strong>${esc(s.from)}</strong> via <strong>${esc(s.label)}</strong>.
+        Applications will be sent from here and replies come straight to you.</div>
+      </div>
+      <div class="row">
+        <button class="btn btn-ghost btn-sm" onclick="editEmail()">Change sender</button>
+        <button class="btn btn-ghost btn-sm" onclick="reTest()">↻ Re-test connection</button>
+        <span id="email-test-status" class="hint"></span>
+      </div>`;
+    updateRunGate();
+    return;
+  }
+
+  badge.innerHTML = '<span class="badge badge-warn">Setup needed</span>';
+  src.textContent = '';
+  body.innerHTML = emailForm(s);
+  bindEmailForm();
+  updateRunGate();
+}
+
+function emailForm(s) {
+  emailMode = s.mode === 'smtp' ? 'smtp' : 'gmail';
+  return `
+    <p class="hint" style="margin-bottom:var(--sp-3);">
+      Applications are sent from your own mailbox, so replies reach you directly.
+      Pick one and test it — the pipeline stays locked until the test passes.
+    </p>
+    <div class="row" style="gap:var(--sp-2);margin-bottom:var(--sp-4);">
+      <button class="btn ${emailMode==='gmail'?'btn-primary':'btn-ghost'} btn-sm" data-mode="gmail" onclick="pickMode('gmail')">Gmail (App Password)</button>
+      <button class="btn ${emailMode==='smtp'?'btn-primary':'btn-ghost'} btn-sm" data-mode="smtp" onclick="pickMode('smtp')">Other email (SMTP)</button>
+    </div>
+
+    <div id="gmail-fields" class="${emailMode==='gmail'?'':'hidden'}">
+      <details style="margin-bottom:var(--sp-4);">
+        <summary style="cursor:pointer;font-weight:600;">📖 How to get a Gmail App Password (2 min)</summary>
+        <ol class="hint" style="margin:var(--sp-3) 0 0 var(--sp-5);line-height:1.9;">
+          <li>Go to <a href="https://myaccount.google.com/security" target="_blank" rel="noopener">myaccount.google.com/security</a> and turn on <strong>2-Step Verification</strong> (required).</li>
+          <li>Then open <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>.</li>
+          <li>Type a name like <em>AutoJob</em> and click <strong>Create</strong>.</li>
+          <li>Copy the <strong>16-character code</strong> Google shows (spaces don't matter) and paste it below.</li>
+        </ol>
+      </details>
+      <div class="stack" style="gap:var(--sp-3);">
+        <label class="stack" style="gap:var(--sp-1);">
+          <span class="hint">Your Gmail address</span>
+          <input class="inp" id="gmail_address" type="email" placeholder="you@gmail.com" value="${esc(s.from||'')}">
+        </label>
+        <label class="stack" style="gap:var(--sp-1);">
+          <span class="hint">16-character App Password</span>
+          <input class="inp" id="gmail_app_password" type="password" placeholder="abcd efgh ijkl mnop" autocomplete="off">
+        </label>
+      </div>
+    </div>
+
+    <div id="smtp-fields" class="${emailMode==='smtp'?'':'hidden'}">
+      <div class="grid grid-2" style="gap:var(--sp-3);">
+        <label class="stack" style="gap:var(--sp-1);">
+          <span class="hint">SMTP host</span>
+          <input class="inp" id="smtp_host" placeholder="smtp.yourhost.com">
+        </label>
+        <label class="stack" style="gap:var(--sp-1);">
+          <span class="hint">Port <span class="hint">(465 = SSL · 587 = TLS)</span></span>
+          <input class="inp" id="smtp_port" type="number" value="587">
+        </label>
+        <label class="stack" style="gap:var(--sp-1);">
+          <span class="hint">Username</span>
+          <input class="inp" id="smtp_user" placeholder="you@yourhost.com">
+        </label>
+        <label class="stack" style="gap:var(--sp-1);">
+          <span class="hint">Password</span>
+          <input class="inp" id="smtp_password" type="password" autocomplete="off">
+        </label>
+        <label class="stack" style="gap:var(--sp-1);">
+          <span class="hint">From address <span class="hint">(optional)</span></span>
+          <input class="inp" id="smtp_from" placeholder="defaults to username">
+        </label>
+      </div>
+    </div>
+
+    <label class="stack" style="gap:var(--sp-1);margin-top:var(--sp-3);">
+      <span class="hint">Your name (shown as sender)</span>
+      <input class="inp" id="from_name" placeholder="Your Name">
+    </label>
+
+    <div class="row" style="margin-top:var(--sp-4);">
+      <button class="btn btn-primary" id="email-save-btn" onclick="saveEmail()">Connect &amp; test</button>
+      <span id="email-test-status" class="hint"></span>
+    </div>`;
+}
+
+function bindEmailForm() { /* inputs use inline handlers; nothing extra needed */ }
+
+function pickMode(mode) {
+  emailMode = mode;
+  document.querySelectorAll('#email-body [data-mode]').forEach(b => {
+    const on = b.dataset.mode === mode;
+    b.classList.toggle('btn-primary', on);
+    b.classList.toggle('btn-ghost', !on);
+  });
+  document.getElementById('gmail-fields').classList.toggle('hidden', mode !== 'gmail');
+  document.getElementById('smtp-fields').classList.toggle('hidden', mode !== 'smtp');
+}
+
+function val(id) { const el = document.getElementById(id); return el ? el.value.trim() : ''; }
+
+async function saveEmail() {
+  const btn = document.getElementById('email-save-btn');
+  const st = document.getElementById('email-test-status');
+  btn.disabled = true;
+  st.innerHTML = '<span class="spin">◜</span> Connecting and testing…';
+
+  const payload = { mode: emailMode, from_name: val('from_name') };
+  if (emailMode === 'gmail') {
+    payload.gmail_address = val('gmail_address');
+    payload.gmail_app_password = val('gmail_app_password');
+  } else {
+    payload.smtp_host = val('smtp_host');
+    payload.smtp_port = val('smtp_port') || '587';
+    payload.smtp_user = val('smtp_user');
+    payload.smtp_password = val('smtp_password');
+    payload.smtp_from = val('smtp_from');
+  }
+
+  try {
+    const r = await postJSON('/api/email/save', payload);
+    st.innerHTML = `<span style="color:${r.success?'var(--green)':'var(--red)'}">${esc(r.message)}</span>`;
+    if (r.success) { setTimeout(loadEmail, 800); }
+  } catch (e) {
+    st.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>`;
+  }
+  btn.disabled = false;
+}
+
+async function reTest() {
+  const st = document.getElementById('email-test-status');
+  st.innerHTML = '<span class="spin">◜</span> Testing…';
+  try {
+    const r = await postJSON('/api/smtp/test', {});
+    st.innerHTML = `<span style="color:${r.success?'var(--green)':'var(--red)'}">${esc(r.message)}</span>`;
+    emailReady = !!r.success; updateRunGate();
+  } catch (e) { st.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>`; }
+}
+
+function editEmail() {
+  document.getElementById('email-badge').innerHTML = '';
+  document.getElementById('email-body').innerHTML = emailForm({ mode: emailMode, from: '' });
+  bindEmailForm();
+}
+
+function updateRunGate() {
+  const btn = document.getElementById('run-btn');
+  if (!btn) return;
+  btn.disabled = !emailReady;
+  btn.title = emailReady ? '' : 'Connect and test your email first';
+  const note = document.getElementById('run-gate-note');
+  if (note) note.classList.toggle('hidden', emailReady);
+}
+
+// ══════════════════════════════════════════════════════
 // Pipeline run + SSE
 // ══════════════════════════════════════════════════════
 let es = null, attempts = 0;
@@ -426,11 +622,20 @@ function runningUI(on) {
 }
 
 async function startRun() {
+  if (!emailReady) {
+    document.getElementById('email-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const st = document.getElementById('email-test-status');
+    if (st) st.innerHTML = '<span style="color:var(--yellow)">Connect and test your email first ↑</span>';
+    return;
+  }
   runningUI(true);
   document.getElementById('console').textContent = '';
   showConsole('Pipeline running');
   try {
     const d = await postJSON('/run', {});
+    if (d.needs_email) {
+      log('✕ ' + d.error); runningUI(false); emailReady = false; updateRunGate(); loadEmail(); return;
+    }
     if (d.error && !d.error.includes('already in progress')) {
       log('✕ ' + d.error); runningUI(false); return;
     }
@@ -703,7 +908,7 @@ document.addEventListener('themechange', loadCharts);
 // Init
 // ══════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', async () => {
-  loadProfile(); loadCVs(); loadScheduler(); loadKeys(); loadCharts();
+  loadProfile(); loadEmail(); loadCVs(); loadScheduler(); loadKeys(); loadCharts();
 
   // Re-attach to a run that was already going when the page loaded.
   try {

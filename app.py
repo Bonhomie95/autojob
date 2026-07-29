@@ -42,6 +42,24 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 app.register_blueprint(settings_bp)
 
+
+@app.context_processor
+def inject_share_meta():
+    """Open Graph / Twitter meta for social shares (LinkedIn link previews)."""
+    base = config.APP_BASE_URL or request.url_root.rstrip("/")
+    return {
+        "share": {
+            "base_url": base,
+            "url": base + "/",
+            "image": base + "/static/og.png",
+            "title": "AutoJob — your CV applies to jobs for you",
+            "description": (
+                "Upload your CV once. AutoJob finds real roles, tailors each "
+                "application, sends it, and follows up — no sign-up required."
+            ),
+        }
+    }
+
 # ── Global run state ──────────────────────────────────────
 _run_lock = threading.Lock()
 _run_active = False
@@ -249,6 +267,19 @@ def trigger_run():
     global _run_active
     from scheduler import is_pipeline_running, mark_pipeline_running
 
+    # Guardrail: don't start a run — which can auto-send real applications —
+    # until the email sender has been tested and confirmed working. This is
+    # the "test it successfully before you start" gate.
+    status = _email_status()
+    if not status["configured"] or not status["verified"]:
+        return jsonify(
+            {
+                "error": "Connect and test your email first — set up Gmail or SMTP "
+                "and run the connection test until it passes.",
+                "needs_email": True,
+            }
+        ), 412
+
     with _run_lock:
         if _run_active or is_pipeline_running():
             return jsonify({"error": "A run is already in progress"}), 409
@@ -422,7 +453,105 @@ def test_smtp():
     from mailer import test_smtp as _test
 
     ok, msg = _test()
+    _update_env_key("EMAIL_VERIFIED", "true" if ok else "false")
+    config.reload()
     return jsonify({"success": ok, "message": msg})
+
+
+# ─────────────────────────────────────────────────────────
+# API — Guided email setup (Gmail app password / generic SMTP)
+# ─────────────────────────────────────────────────────────
+
+
+def _email_status() -> dict:
+    """A single source of truth for the onboarding gate."""
+    config.reload()
+    providers = getattr(config, "EMAIL_PROVIDERS", [])
+    smtp = next((p for p in providers if p.get("name") == "smtp"), None)
+    mode = ""
+    from_addr = ""
+    label = ""
+    if smtp:
+        label = smtp.get("label", "SMTP")
+        mode = "gmail" if label == "Gmail" else "smtp"
+        from_addr = smtp.get("from", "")
+    elif providers:
+        mode = "api"
+        label = providers[0].get("label", providers[0].get("name", ""))
+        from_addr = providers[0].get("from", "")
+
+    verified = os.getenv("EMAIL_VERIFIED", "false").lower() == "true"
+    return {
+        "configured": bool(providers),
+        "mode": mode,
+        "label": label,
+        "from": from_addr,
+        "verified": verified and bool(providers),
+        "auto_send": getattr(config, "SMTP_AUTO_SEND", False),
+    }
+
+
+@app.route("/api/email/status")
+def api_email_status():
+    return jsonify(_email_status())
+
+
+@app.route("/api/email/save", methods=["POST"])
+def api_email_save():
+    """
+    Save the user's chosen sender (Gmail app password or generic SMTP) and
+    immediately verify it with a live connection test. Nothing is trusted
+    until this test passes — that is what unlocks the Run button.
+    """
+    from mailer import test_smtp as _test
+
+    data = request.json or {}
+    mode = (data.get("mode") or "").strip().lower()
+    updates: dict[str, str] = {"EMAIL_MODE": mode}
+
+    if data.get("from_name"):
+        updates["CANDIDATE_NAME"] = data["from_name"].strip()
+
+    if mode == "gmail":
+        addr = (data.get("gmail_address") or "").strip()
+        pwd = (data.get("gmail_app_password") or "").replace(" ", "").strip()
+        if not addr or not pwd:
+            return jsonify({"success": False, "message": "Gmail address and App Password are both required."}), 400
+        updates["GMAIL_ADDRESS"] = addr
+        updates["GMAIL_APP_PASSWORD"] = pwd
+        # Clear generic SMTP so only one real sender is active.
+        updates["SMTP_HOST"] = ""
+        updates["SMTP_USER"] = ""
+        updates["SMTP_PASSWORD"] = ""
+        updates["SMTP_REPLY_TO"] = addr
+    elif mode == "smtp":
+        host = (data.get("smtp_host") or "").strip()
+        user = (data.get("smtp_user") or "").strip()
+        pwd = (data.get("smtp_password") or "").strip()
+        port = str(data.get("smtp_port") or "587").strip()
+        from_addr = (data.get("smtp_from") or user).strip()
+        if not host or not user or not pwd:
+            return jsonify({"success": False, "message": "SMTP host, username and password are all required."}), 400
+        updates["SMTP_HOST"] = host
+        updates["SMTP_PORT"] = port
+        updates["SMTP_USER"] = user
+        updates["SMTP_PASSWORD"] = pwd
+        updates["SMTP_FROM"] = from_addr
+        updates["SMTP_TLS"] = "false" if port == "465" else "true"
+        updates["SMTP_REPLY_TO"] = from_addr
+        # Clear Gmail so only one real sender is active.
+        updates["GMAIL_ADDRESS"] = ""
+        updates["GMAIL_APP_PASSWORD"] = ""
+    else:
+        return jsonify({"success": False, "message": "Choose Gmail or SMTP."}), 400
+
+    _update_env_multi(updates)
+    config.reload()
+
+    ok, msg = _test()
+    _update_env_key("EMAIL_VERIFIED", "true" if ok else "false")
+    config.reload()
+    return jsonify({"success": ok, "message": msg, "status": _email_status()})
 
 
 @app.route("/api/smtp/send-test", methods=["POST"])
@@ -833,23 +962,20 @@ def api_keys_status():
 
 
 def _update_env_key(key: str, value: str):
-    """Update or add a key=value line in .env file."""
-    env_path = Path(__file__).parent / ".env"
-    if not env_path.exists():
-        env_path.write_text(f"{key}={value}\n")
-        return
-    lines = env_path.read_text().splitlines()
-    found = False
-    new_lines = []
-    for line in lines:
-        if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
-            new_lines.append(f"{key}={value}")
-            found = True
-        else:
-            new_lines.append(line)
-    if not found:
-        new_lines.append(f"{key}={value}")
-    env_path.write_text("\n".join(new_lines) + "\n")
+    """Persist a single setting to the database."""
+    _update_env_multi({key: value})
+
+
+def _update_env_multi(updates: dict[str, str]):
+    """
+    Persist settings to the database (the UI-editable source of truth) and
+    refresh the running config. Nothing is written to .env — a deployed user
+    has no shell access to it, and Render wipes the code dir on redeploy.
+    """
+    from database import set_settings
+
+    set_settings(updates)
+    config.reload()
 
 
 # ─────────────────────────────────────────────────────────
@@ -880,33 +1006,32 @@ def api_portal_clear_login_backlog():
     One-shot cleanup: mark all backlogged portal jobs that are stuck due
     to login walls as 'skipped' so they stop clogging the retry queue.
     """
-    import sqlite3
-
-    db_path = config.DB_PATH
     login_signals = [
         "portal requires login",
         "skip:login_required",
         "requires login",
         "login required",
     ]
-    conditions = " OR ".join(["LOWER(portal_error) LIKE ?" for _ in login_signals])
+    # All patterns are passed as parameters (never inlined) so this is safe
+    # on both SQLite and Postgres — literal % in SQL would break psycopg2.
+    signal_conditions = " OR ".join(["LOWER(portal_error) LIKE ?" for _ in login_signals])
     params = [f"%{s}%" for s in login_signals]
+    params += ["%linkedin.com/jobs%", "%linkedin.com/authwall%"]
 
     try:
-        with sqlite3.connect(db_path) as conn:
+        with get_conn() as conn:
             result = conn.execute(
                 f"""UPDATE jobs
                        SET portal_status = 'skipped',
                            portal_error  = 'SKIP:login_required — cleared by bulk cleanup'
                      WHERE portal_status IN ('pending', 'failed')
                        AND (
-                             ({conditions})
-                             OR LOWER(application_url) LIKE '%linkedin.com/jobs%'
-                             OR LOWER(application_url) LIKE '%linkedin.com/authwall%'
+                             ({signal_conditions})
+                             OR LOWER(application_url) LIKE ?
+                             OR LOWER(application_url) LIKE ?
                            )""",
                 params,
             )
-            conn.commit()
             cleared = result.rowcount
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500

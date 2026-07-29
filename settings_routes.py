@@ -1,18 +1,15 @@
 """
 settings.py — Flask blueprint for the Settings UI.
-Reads the .env file, renders an editable form, and writes changes back.
-API keys are never shown or modified through this interface.
+
+Renders an editable form and saves changes to the database (the UI-editable
+source of truth). API keys are never shown or modified through this interface.
 """
 
 import os
 import re
-from pathlib import Path
 from flask import Blueprint, render_template, request, redirect, url_for, jsonify
-from dotenv import load_dotenv
 
 settings_bp = Blueprint("settings", __name__)
-
-ENV_PATH = Path(".env")
 
 
 def _active_profile() -> dict:
@@ -95,6 +92,50 @@ SETTINGS_FIELDS = [
         'Optional: explicit project → URL map as JSON. These override auto-fetched GitHub URLs. '
         'Format: {"ProjectName":"https://github.com/you/repo","AnotherProject":"https://live-demo.com"} '
         "Leave blank to use auto-fetched GitHub URLs.",
+    ),
+    # ── Automation (the operational controls: how many, and when)
+    (
+        "MAX_APPLICATIONS_PER_RUN",
+        "Applications per run",
+        "number",
+        "Automation",
+        "How many jobs to apply to each run — the top matches by score. 0 = no limit.",
+    ),
+    (
+        "EMAIL_DAILY_LIMIT",
+        "Daily email limit",
+        "number",
+        "Automation",
+        "Hard cap on emails sent per day across all runs. 0 = no limit.",
+    ),
+    (
+        "SCHEDULE_ENABLED",
+        "Run automatically",
+        "bool",
+        "Automation",
+        "When on, AutoJob runs itself on the schedule below (test your email first).",
+    ),
+    (
+        "SCHEDULE_TIME",
+        "Run at (24h, HH:MM)",
+        "text",
+        "Automation",
+        "Local time to run, e.g. 08:00 or 17:30 (uses the Timezone set below).",
+    ),
+    (
+        "SCHEDULE_FREQUENCY",
+        "How often",
+        "select",
+        "Automation",
+        "How often the automatic run happens.",
+        ["weekdays", "daily"],
+    ),
+    (
+        "SCHEDULE_FOLLOWUP",
+        "Auto follow-ups",
+        "bool",
+        "Automation",
+        "After each scheduled run, send follow-ups for applications with no reply.",
     ),
     # ── Target Roles
     (
@@ -353,80 +394,42 @@ HIDDEN_KEYS = {
 }
 
 
-def _read_env() -> dict[str, str]:
-    """Read all key=value pairs from .env, preserving values as-is."""
-    if not ENV_PATH.exists():
-        return {}
-    values: dict[str, str] = {}
-    for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        key = key.strip()
-        if key in HIDDEN_KEYS:
-            continue
-        # Strip inline comments and quotes
-        val = val.split(" #")[0].strip().strip('"').strip("'")
-        values[key] = val
-    return values
+def _read_settings() -> dict[str, str]:
+    """UI-editable settings stored in the database (the source of truth)."""
+    from database import get_settings_map
+
+    return {k: v for k, v in get_settings_map().items() if k not in HIDDEN_KEYS}
 
 
 def _write_env(updates: dict[str, str]):
     """
-    Write updated values back to .env, preserving comments, structure,
-    and any keys not managed by the UI (including API keys).
+    Persist settings to the database and refresh the running config.
+
+    Named for backwards compatibility — nothing is written to .env anymore.
+    The database is what a deployed user (with no shell access) can edit from
+    the dashboard, and it is shared by every worker/process.
     """
-    if not ENV_PATH.exists():
-        # Create fresh from updates
-        lines = [f"{k}={v}" for k, v in updates.items()]
-        ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        load_dotenv(override=True)
-        return
-
-    original = ENV_PATH.read_text(encoding="utf-8")
-    result_lines: list[str] = []
-    written_keys: set[str] = set()
-
-    for line in original.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            result_lines.append(line)
-            continue
-        key = stripped.split("=")[0].strip()
-        if key in HIDDEN_KEYS:
-            result_lines.append(line)
-            continue
-        if key in updates:
-            result_lines.append(f"{key}={updates[key]}")
-            written_keys.add(key)
-        else:
-            result_lines.append(line)
-
-    # Append any new keys not previously in .env
-    for key, val in updates.items():
-        if key not in written_keys and key not in HIDDEN_KEYS:
-            result_lines.append(f"{key}={val}")
-
-    ENV_PATH.write_text("\n".join(result_lines) + "\n", encoding="utf-8")
-
-    # Reload .env into os.environ and update the config singleton in place
-    load_dotenv(override=True)
+    from database import set_settings
     from config import config
 
+    set_settings(updates)
     config.reload()
+
+    # Apply schedule changes to the live scheduler without a restart.
+    try:
+        from scheduler import reschedule
+
+        reschedule()
+    except Exception:
+        pass
 
 
 def _get_current_values() -> dict[str, str]:
-    """Get current values for all settings fields from .env + os.environ."""
-    env_file_vals = _read_env()
+    """Current value for each settings field: DB override, else env, else ''."""
+    saved = _read_settings()
     result: dict[str, str] = {}
     for key, *_ in SETTINGS_FIELDS:
-        # Prefer .env file value, fallback to os.environ
-        if key in env_file_vals:
-            result[key] = env_file_vals[key]
-        else:
-            result[key] = os.getenv(key, "")
+        result[key] = saved.get(key) if key in saved else os.getenv(key, "")
     return result
 
 
@@ -436,9 +439,10 @@ def settings_page():
     # Group fields by section
     sections: dict[str, list[tuple]] = {}
     for field in SETTINGS_FIELDS:
-        key, label, ftype, section, hint = field
+        key, label, ftype, section, hint = field[:5]
+        options = field[5] if len(field) > 5 else None
         sections.setdefault(section, []).append(
-            (key, label, ftype, hint, current.get(key, ""))
+            (key, label, ftype, hint, current.get(key, ""), options)
         )
     return render_template("settings.html", sections=sections)
 

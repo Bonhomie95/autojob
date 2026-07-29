@@ -1,0 +1,52 @@
+# Render blueprint for AutoJob (single-user, no sign-in).
+# Deploy: push this repo to GitHub, then in Render → "New +" → "Blueprint",
+# point it at this repo. Render reads this file and provisions everything:
+# a managed Postgres database + a web service + a small disk for files.
+
+databases:
+  - name: autojob-db
+    databaseName: autojob
+    user: autojob
+    plan: free          # upgrade to a paid plan for backups + no 90-day expiry
+
+services:
+  - type: web
+    name: autojob
+    runtime: python
+    plan: starter        # "free" also works but sleeps after inactivity
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn wsgi:app --workers 1 --threads 8 --timeout 120 --bind 0.0.0.0:$PORT
+    healthCheckPath: /
+    autoDeploy: true
+    # The disk holds uploaded CVs and generated application packages. Everything
+    # else — job history, the "don't apply twice" memory, AND all your settings
+    # (email sender, schedule, job caps) — lives in Postgres, edited from the
+    # dashboard. Nothing important depends on files or .env, so redeploys are safe.
+    disk:
+      name: autojob-files
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.6"
+      # ── Database: managed Postgres (auto-wired from the block above) ──
+      - key: DATABASE_URL
+        fromDatabase:
+          name: autojob-db
+          property: connectionString
+      # ── File storage (on the mounted disk) ──
+      - key: INPUT_DIR
+        value: /var/data/input
+      - key: OUTPUT_DIR
+        value: /var/data/output
+      # ── App ──
+      - key: FLASK_DEBUG
+        value: "false"
+      # Everything below (schedule, job counts, email, timezone) is set from the
+      # dashboard Settings page and stored in the database — no env vars needed.
+      # Set your live URL so LinkedIn share cards point at the right place:
+      - key: APP_BASE_URL
+        sync: false
+      # Optional: only needed for AI polish of your very top matches.
+      - key: GROQ_API_KEY
+        sync: false

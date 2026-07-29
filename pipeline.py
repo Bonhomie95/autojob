@@ -441,6 +441,20 @@ def run_pipeline(progress_cb=None, cv_filename: str = "") -> dict:
         except Exception as e:
             emit(f"    ⚠ Scoring error: {e}")
 
+    # Cap to the top-N matches the user chose to apply to this run (set from
+    # the dashboard). The rest stay 'pending' so a later run can pick them up.
+    cap = int(getattr(config, "MAX_APPLICATIONS_PER_RUN", 0) or 0)
+    if cap and len(qualified) > cap:
+        qualified.sort(
+            key=lambda j: j.get("_score_data", {}).get("score", 0), reverse=True
+        )
+        held = qualified[cap:]
+        qualified = qualified[:cap]
+        emit(
+            f"🎯 Applying to the top {cap} match(es) this run — "
+            f"{len(held)} held for next time (your per-run limit)."
+        )
+
     jobs_scored = len(qualified)
     emit(
         f"✅ {len(qualified)} qualified · {rejected} filtered out · "

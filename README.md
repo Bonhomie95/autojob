@@ -14,6 +14,191 @@
 
 ---
 
+## 📣 What changed in this update (message to you)
+
+Here's everything these passes added or changed, and a few honest notes.
+
+**Major revamp round (your feedback — "settings shouldn't live in .env, and it won't work on Render"):**
+
+You were right that it needed more than surface fixes. What changed:
+
+- **All settings now live in the database, editable from the dashboard — not `.env`.** There's a
+  new `app_settings` table and `Config` reads **database → environment → default** for every
+  value. A deployed user (who has no shell access) changes everything from the UI, and it's
+  shared across processes and survives redeploys. Saving settings writes to the DB, never to a
+  file. I tested this on both SQLite and Postgres, including persistence across a simulated
+  restart.
+- **New operational controls in Settings → Automation:** **"Applications per run"** (how many of
+  the top-scoring jobs to apply to each run — enforced in the pipeline), a **daily email limit**,
+  and a friendly **"Run automatically" schedule** (on/off, time, weekdays-or-daily). Changing the
+  schedule **re-arms the live scheduler instantly** — no restart — which I verified end-to-end
+  (set 18:45 daily → next run showed 18:45 the next day).
+- **Fixed a real bug that would break deploys:** `config.reload()` was calling
+  `load_dotenv(override=True)`, which let a stale `.env` value *overwrite real environment
+  variables* — it was flipping `DB_PATH`/`DATABASE_URL` back to the wrong database mid-run. Reload
+  no longer touches `.env`.
+- **Cloud-safe defaults.** Tor proxy, Ollama, and the Playwright portal filler all assume
+  `localhost` services that don't exist on Render — they now default **off** and are UI toggles,
+  so a fresh deploy just works. The scheduler is created safely and only arms a job when you turn
+  automation on.
+- **Removed the `ACTIVE_CV` env dependency** — the active CV is chosen in the UI and stored in the
+  DB, exactly as you asked ("operated via UI, not the codebase").
+- **`render.yaml` simplified** — provisions Postgres + a small disk for uploaded CVs and generated
+  packages; every behavioural setting is now in the dashboard, so there are almost no env vars to
+  manage.
+
+**Follow-up round (your feedback):**
+
+- **Switched to Postgres.** You were right — I now use **Postgres whenever `DATABASE_URL` is
+  set** (auto-wired by `render.yaml`), with SQLite only as the local no-setup fallback. I
+  rewrote `database.py` to run on both from one code path and **tested it against a real
+  Postgres** as well as SQLite (inserts, dedup, upserts, follow-up windows, stats — all pass).
+  On your deploy you'll get a fresh Postgres DB instead of the old local `jobhunter.db`.
+- **CV upload is now obvious.** It's the first thing on the dashboard — a big **"1 · Upload
+  your CV"** drop area at the top, with your parsed profile right below it, then
+  **"2 · Connect your email"**, then Run. (Locally you still see your old data because that
+  lives in the SQLite `jobhunter.db`; a Postgres deploy starts clean.)
+- **Cleaned your `.env`** — removed 28 lines of dead keys the app never reads (`TARGET_ROLES`,
+  `KEYWORDS`, `EXPERIENCE_LEVEL`, `MAX_SALARY`, `SALARY_CURRENCY`, `CANDIDATE_EDUCATION_*`,
+  `ENRICH_COMPANY_DATA`, `OLLAMA_TIMEOUT`), duplicate `CONTACT_SEARCH_*` blocks, and the
+  redundant OS-level `HTTP(S)_PROXY` overrides (those would force *all* traffic through Tor;
+  scraper proxying still works via `PROXY_ENABLED`/`PROXY_LIST`). **I kept every real secret
+  value** and saved a backup at `.env.backup-before-cleanup`. I also turned
+  `FOLLOW_UP_ENABLED=true` since you want follow-ups on.
+
+**First round — added / built:**
+
+- **Real email sending you actually control.** Before, email only worked through Brevo/SMTP2GO
+  API keys and the "test" didn't connect to anything. Now you can send from **Gmail (App
+  Password)** or **any SMTP mailbox**, and the **connection test genuinely logs in** — I
+  verified it live: a wrong Gmail password is rejected on the spot and the run stays locked.
+- **A test-before-you-start gate.** The **Run & apply** button is disabled until the email test
+  passes, exactly as you asked — no more failures halfway through a run.
+- **A guided, straightforward flow.** Upload CV → it evaluates and shows what it understood →
+  if your CV is ambiguous (e.g. two emails) it asks you first → connect + test email → run.
+- **Render-ready deploy.** `render.yaml` + `Procfile` + a `wsgi.py` entrypoint, a persistent
+  disk so nothing is lost on redeploy, and `PORT`/gunicorn wired up. I smoke-tested the exact
+  production command (`gunicorn wsgi:app`) and it serves correctly.
+- **LinkedIn sharing.** Open Graph/Twitter meta on every page, a generated share image, and a
+  Share button — plus a ready-to-post caption above.
+- **UI polish.** Kept and cleaned up the existing **dark/light themes**, added a styled email
+  setup card, form inputs, a footer, and a clearer "Run & apply" call-to-action.
+- **Kept what already worked well:** no sign-up, CV parsing/evaluation, the **don't-apply-twice
+  memory** (requirement 11), and **automatic follow-ups after a few days** (requirement 12)
+  were already solid — I verified them and surfaced them in the flow rather than rebuilding.
+
+**Decisions I made for you (you said not to ask mid-way):**
+
+- **Kept it as one Flask app on Render** instead of splitting into Vite/React on Vercel — the
+  reasoning is in the deploy section above. It's simpler and cheaper for this tool.
+- **Kept one Flask service** rather than a Vite/Vercel split — reasoning in the deploy section.
+  *(The earlier SQLite decision was reversed on your feedback — it's Postgres now.)*
+
+**Worth knowing:**
+
+- The bigger multi-tenant SaaS in `autojob/` (with login) still exists in the repo; this update
+  focused on the **no-sign-up `app.py` experience** you asked for. All 43 existing tests pass.
+- Actually sending live applications needs real recruiter email addresses, which come from the
+  scrapers/contact enrichment at run time — I verified the whole path up to the send, but I did
+  not blast real emails to real people from your account during testing.
+
+---
+
+## 🚀 Upload a CV — it applies for you (no sign-up)
+
+This is the simplest way to use AutoJob and the one this latest update is built around:
+**no account, no login.** Open the dashboard, upload your CV, connect your email, and run.
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env          # optional — everything else is set in the UI
+python app.py                 # → http://localhost:5000
+```
+
+Then, in the dashboard:
+
+1. **Upload your CV** (PDF / DOCX / TXT). AutoJob reads it and shows you exactly what it
+   understood — your roles, seniority, skills, and the searches it will run. If your CV
+   states something twice (two emails, two phone numbers), it **stops and asks you** which
+   to use before anything is sent.
+2. **Connect your email** (see below). The **Run** button stays locked until a live
+   connection test passes — so a wrong password never fails you mid-run.
+3. **Run & apply.** It scrapes real job boards, scores each role against your CV, builds a
+   tailored CV + cover letter per company, and emails the application from *your* mailbox.
+   It **remembers every job it applied to** (won't apply twice) and **follows up** after a
+   few days if there's no reply.
+
+### ✉️ Email setup — two options, both tested before you start
+
+AutoJob sends from **your own mailbox**, so replies come straight to you. Pick one in the
+dashboard's **Email sender** card:
+
+**Option A — Gmail (easiest).** Uses a Google *App Password* (not your normal password):
+
+1. Turn on **2-Step Verification** at <https://myaccount.google.com/security>.
+2. Open <https://myaccount.google.com/apppasswords>, name it "AutoJob", click **Create**.
+3. Copy the **16-character code** and paste it, with your Gmail address, into the dashboard.
+
+The dashboard shows this guide inline, so you don't need to leave the app.
+
+**Option B — Any other email (SMTP).** Enter your provider's SMTP host, port
+(465 = SSL, 587 = TLS), username, and password.
+
+Either way, click **Connect & test**. AutoJob opens a real connection and logs in — if the
+credentials are wrong, it tells you *right there* and keeps the pipeline locked. Only a
+successful test unlocks **Run & apply**. (Brevo / SMTP2GO API keys, if you set them in
+`.env`, still work as optional fallbacks.)
+
+### ☁️ Deploy on Render (free/cheap, persistent)
+
+The repo ships a ready **[`render.yaml`](render.yaml)** blueprint and **[`Procfile`](Procfile)**:
+
+1. Push this repo to GitHub.
+2. In Render → **New + → Blueprint** → pick the repo. Render reads `render.yaml` and
+   provisions a **managed Postgres database** + a web service + a small disk at `/var/data`.
+3. Open the app URL, upload your CV, connect email, run.
+
+**Postgres** holds all job history — so AutoJob's "don't apply to the same job twice" memory is
+safe and portable. The small disk holds your uploaded CVs, the generated application packages,
+and the settings you save in the dashboard, so those survive redeploys too. The app honours
+Render's injected `PORT`, and `gunicorn wsgi:app` runs the production server.
+
+> **Why not a separate Vite/React frontend on Vercel?** The dashboard is a fast,
+> server-rendered Flask UI with live pipeline streaming (SSE) — splitting it into a static
+> Vercel frontend + Render backend would add a CORS/proxy layer and a websocket relay for
+> **zero** user benefit here. One Render service is simpler, cheaper, and deploys in one
+> click. If you ever want the split, the JSON API under `/api/*` is already the seam to build
+> a React client against.
+
+> **Database.** AutoJob runs on **Postgres whenever `DATABASE_URL` is set** (the Render
+> blueprint wires this up for you) and falls back to a local **SQLite** file (`DB_PATH`) when
+> it isn't — so `python app.py` still works with zero setup on your machine. The same code
+> path serves both; all date logic is written dialect-neutrally (ISO-string comparisons, no
+> `julianday`/`date('now')`), and both engines are covered by the smoke tests. To point local
+> dev at Postgres too, just set `DATABASE_URL=postgresql://…` in `.env`.
+
+### 🔗 Share it on LinkedIn
+
+Every page carries **Open Graph tags** and a generated share image
+([`static/og.png`](static/og.png)), so pasting your deployed URL into a LinkedIn post shows a
+polished preview card automatically. There's a **Share** button in the nav and footer that
+opens LinkedIn's share dialog pre-filled with your link.
+
+A caption you can post (swap in your URL):
+
+> I got tired of copy-pasting the same job application 40 times, so I built **AutoJob** 🤖
+>
+> Upload your CV once → it finds real remote roles that match, tailors a CV + cover letter
+> for each, emails the application from your own inbox, remembers what it already applied to,
+> and follows up after a few days. No sign-up. Open source.
+>
+> Try it: <your-render-url>  ·  Built with Python + Flask.
+
+Set `APP_BASE_URL=https://your-app.onrender.com` in the environment so the share card always
+points at your real domain (otherwise it auto-detects from the request).
+
+---
+
 ## Original single-user tool
 
 > Automated job discovery, token-light scoring, HR contact extraction, per-company application package generation, sender rotation, follow-up scheduling, and reply detection — all in a clean Flask dashboard.

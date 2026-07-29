@@ -4,6 +4,25 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% block title %}AutoJob{% endblock %}</title>
+
+  {% if share %}
+  <meta name="description" content="{{ share.description }}" />
+  <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'&gt;&lt;rect width='32' height='32' rx='8' fill='%234d7cfe'/&gt;&lt;path d='M16 8l8 8-8 8-8-8z' fill='white'/&gt;&lt;/svg&gt;" />
+  <!-- Open Graph (LinkedIn, Facebook, Slack) -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="AutoJob" />
+  <meta property="og:title" content="{{ share.title }}" />
+  <meta property="og:description" content="{{ share.description }}" />
+  <meta property="og:url" content="{{ share.url }}" />
+  <meta property="og:image" content="{{ share.image }}" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="{{ share.title }}" />
+  <meta name="twitter:description" content="{{ share.description }}" />
+  <meta name="twitter:image" content="{{ share.image }}" />
+  {% endif %}
   <style>
     /* ══════════════════════════════════════════════════════
        Design tokens
@@ -267,6 +286,23 @@
       white-space: pre-wrap; word-break: break-word;
     }
 
+    /* ── Form inputs ───────────────────────────────────── */
+    .inp {
+      width: 100%;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
+      padding: var(--sp-2) var(--sp-3);
+      color: var(--text);
+      font-family: inherit; font-size: var(--step-0);
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .inp::placeholder { color: var(--text-mute); }
+    .inp:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+    label { display: block; }
+    details summary { color: var(--text-dim); }
+    details[open] summary { color: var(--text); margin-bottom: var(--sp-1); }
+
     /* ── Dropzone ──────────────────────────────────────── */
     .dropzone {
       border: 1.5px dashed var(--border-2);
@@ -332,12 +368,30 @@
       <a href="/settings" {% if request.path == '/settings' %}class="active"{% endif %}>Settings</a>
     </div>
     <span id="live-pill" class="chip hidden"><span class="dot dot-live"></span> Running</span>
+    {% if share %}
+    <a class="btn btn-ghost btn-sm" id="share-btn"
+       href="https://www.linkedin.com/sharing/share-offsite/?url={{ share.url | urlencode }}"
+       target="_blank" rel="noopener" title="Share AutoJob on LinkedIn">
+      <span aria-hidden="true">in</span> Share
+    </a>
+    {% endif %}
     <button class="icon-btn" id="theme-btn" onclick="toggleTheme()" title="Toggle theme">◑</button>
   </nav>
 
   <main class="container">
     {% block content %}{% endblock %}
   </main>
+
+  <footer style="border-top:1px solid var(--border); margin-top:var(--sp-6);">
+    <div class="container spread" style="padding-top:var(--sp-4); padding-bottom:var(--sp-4);">
+      <span class="hint">AutoJob — upload a CV, it applies for you. No sign-up.</span>
+      {% if share %}
+      <a class="btn btn-ghost btn-sm"
+         href="https://www.linkedin.com/sharing/share-offsite/?url={{ share.url | urlencode }}"
+         target="_blank" rel="noopener">Share on LinkedIn →</a>
+      {% endif %}
+    </div>
+  </footer>
 
   <script>
     // ── Theme: follow the OS unless the user has chosen ──
@@ -376,7 +430,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body || {}),
       });
-      if (!r.ok && r.status !== 409) throw new Error(r.status + ' ' + r.statusText);
+      if (!r.ok && r.status !== 409 && r.status !== 412) throw new Error(r.status + ' ' + r.statusText);
       return r.json();
     }
   </script>
