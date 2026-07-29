@@ -499,7 +499,15 @@ function emailForm(s) {
           <input class="inp" id="smtp_host" placeholder="smtp.yourhost.com">
         </label>
         <label class="stack" style="gap:var(--sp-1);">
-          <span class="hint">Port <span class="hint">(465 = SSL · 587 = TLS)</span></span>
+          <span class="hint">Encryption</span>
+          <select class="inp" id="smtp_security" onchange="syncSmtpPort()">
+            <option value="starttls">STARTTLS (usually port 587)</option>
+            <option value="ssl">SSL / TLS (usually port 465)</option>
+            <option value="none">None (not recommended)</option>
+          </select>
+        </label>
+        <label class="stack" style="gap:var(--sp-1);">
+          <span class="hint">Port</span>
           <input class="inp" id="smtp_port" type="number" value="587">
         </label>
         <label class="stack" style="gap:var(--sp-1);">
@@ -543,6 +551,14 @@ function pickMode(mode) {
 
 function val(id) { const el = document.getElementById(id); return el ? el.value.trim() : ''; }
 
+// When the encryption choice changes, nudge the port to the usual default.
+function syncSmtpPort() {
+  const sec = document.getElementById('smtp_security').value;
+  const port = document.getElementById('smtp_port');
+  if (sec === 'ssl' && (port.value === '587' || !port.value)) port.value = '465';
+  else if (sec === 'starttls' && (port.value === '465' || !port.value)) port.value = '587';
+}
+
 async function saveEmail() {
   const btn = document.getElementById('email-save-btn');
   const st = document.getElementById('email-test-status');
@@ -559,6 +575,7 @@ async function saveEmail() {
     payload.smtp_user = val('smtp_user');
     payload.smtp_password = val('smtp_password');
     payload.smtp_from = val('smtp_from');
+    payload.smtp_security = val('smtp_security') || 'starttls';
   }
 
   try {
@@ -577,7 +594,8 @@ async function reTest() {
   try {
     const r = await postJSON('/api/smtp/test', {});
     st.innerHTML = `<span style="color:${r.success?'var(--green)':'var(--red)'}">${esc(r.message)}</span>`;
-    emailReady = !!r.success; updateRunGate();
+    // Only unlock on success; a flaky re-test won't re-lock a verified sender.
+    if (r.success) { emailReady = true; updateRunGate(); }
   } catch (e) { st.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>`; }
 }
 

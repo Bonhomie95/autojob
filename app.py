@@ -461,8 +461,12 @@ def test_smtp():
     from mailer import test_smtp as _test
 
     ok, msg = _test()
-    _update_env_key("EMAIL_VERIFIED", "true" if ok else "false")
-    config.reload()
+    # Only ever UPGRADE to verified here. A flaky re-test (e.g. a transient
+    # SES timeout) must not re-lock a sender that already connected once —
+    # the initial save flow is what strictly gates verification.
+    if ok:
+        _update_env_key("EMAIL_VERIFIED", "true")
+        config.reload()
     return jsonify({"success": ok, "message": msg})
 
 
@@ -488,7 +492,11 @@ def _email_status() -> dict:
         label = providers[0].get("label", providers[0].get("name", ""))
         from_addr = providers[0].get("from", "")
 
-    verified = os.getenv("EMAIL_VERIFIED", "false").lower() == "true"
+    # EMAIL_VERIFIED is stored in the database (set after a passing test), so
+    # read it from there — not os.environ, which never sees the saved value.
+    from database import get_setting
+
+    verified = (get_setting("EMAIL_VERIFIED", "false") or "false").lower() == "true"
     return {
         "configured": bool(providers),
         "mode": mode,
@@ -538,6 +546,11 @@ def api_email_save():
         pwd = (data.get("smtp_password") or "").strip()
         port = str(data.get("smtp_port") or "587").strip()
         from_addr = (data.get("smtp_from") or user).strip()
+        # Encryption chosen by the user: "ssl" (465), "starttls" (587), "none".
+        # Falls back to a port-based guess if not provided.
+        security = (data.get("smtp_security") or "").strip().lower()
+        if security not in ("ssl", "starttls", "none"):
+            security = "ssl" if port == "465" else "starttls"
         if not host or not user or not pwd:
             return jsonify({"success": False, "message": "SMTP host, username and password are all required."}), 400
         updates["SMTP_HOST"] = host
@@ -545,7 +558,8 @@ def api_email_save():
         updates["SMTP_USER"] = user
         updates["SMTP_PASSWORD"] = pwd
         updates["SMTP_FROM"] = from_addr
-        updates["SMTP_TLS"] = "false" if port == "465" else "true"
+        updates["SMTP_SSL"] = "true" if security == "ssl" else "false"
+        updates["SMTP_TLS"] = "true" if security == "starttls" else "false"
         updates["SMTP_REPLY_TO"] = from_addr
         # Clear Gmail so only one real sender is active.
         updates["GMAIL_ADDRESS"] = ""

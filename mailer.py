@@ -725,7 +725,9 @@ def test_smtp() -> tuple[bool, str]:
         provider = smtp_providers[0]
         label = provider.get("label", "SMTP")
         try:
-            server = _smtp_connect(provider, timeout=20)
+            # Some hosted SMTP endpoints (e.g. Amazon SES / mail-manager) are
+            # slow to accept a fresh connection, so give it a generous window.
+            server = _smtp_connect(provider, timeout=45)
             server.quit()
             return True, (
                 f"✅ Connected and logged in to {label} "

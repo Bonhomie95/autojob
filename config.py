@@ -225,6 +225,9 @@ class Config:
         self.SMTP_PASSWORD: str  = self._get("SMTP_PASSWORD", "")
         self.SMTP_FROM: str      = self._get("SMTP_FROM", "")
         self.SMTP_TLS: bool      = self._get("SMTP_TLS", "true").lower() == "true"
+        # Explicit SSL choice. "" = decide by port (465 = SSL). "true"/"false"
+        # let the user force it from the dashboard regardless of port.
+        self.SMTP_SSL: str       = self._get("SMTP_SSL", "").lower()
 
         # ── Gmail (app password) — the simplest option for most people.
         # Turn on 2-Step Verification, then create an App Password at
@@ -360,7 +363,11 @@ class Config:
 
         # ── Generic SMTP (any provider / company mailbox) ─────
         elif self.SMTP_HOST and self.SMTP_USER and self.SMTP_PASSWORD:
-            use_ssl = self.SMTP_PORT == 465
+            # Explicit SSL wins; otherwise fall back to the port convention.
+            if self.SMTP_SSL in ("true", "false"):
+                use_ssl = self.SMTP_SSL == "true"
+            else:
+                use_ssl = self.SMTP_PORT == 465
             providers.append({
                 "name": "smtp",
                 "label": "SMTP",
