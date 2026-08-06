@@ -201,8 +201,35 @@ def parse_salary(text: str) -> int:
 # Component scores
 # ──────────────────────────────────────────────────────────────
 
+# IDF-weighted matched skill weight at which the "depth" factor saturates —
+# roughly a handful of genuine, distinctive shared skills. Below this a posting
+# that coincidentally names one or two skills the CV happens to have cannot earn
+# full marks just because those were the only skills it mentioned. This is what
+# stops a secretary post that says "Agile" and "Jira" from scoring like a real
+# engineering role, without needing the posting to list a specific number.
+_SKILL_DEPTH_TARGET = 6.0
+
+# Domain-relevance gate thresholds (see score_offline). A job is treated as
+# off-domain only when it clears *both* bars: its title barely relates to any
+# role the candidate has held, and it shares fewer than this many known skills
+# with the CV. _TITLE_RELATED_FLOOR is on the 0-25 title scale — ~0.3 title
+# overlap — so a genuinely adjacent title is never mistaken for off-domain.
+_TITLE_RELATED_FLOOR = 8.0
+_MIN_DOMAIN_SKILLS = 3
+
+
 def _skill_score(profile: dict, job_text: str) -> tuple[float, list[str], list[str]]:
-    """IDF-weighted overlap between profile skills and posting skills."""
+    """
+    IDF-weighted overlap between profile skills and posting skills.
+
+    The score rewards *absolute* demonstrated overlap first (depth) and the
+    fraction of the posting's stack covered second (coverage). Depth-first is
+    deliberate: matching twelve real technologies is a strong signal no matter
+    how many other skills the JD lists, whereas a pure coverage ratio perversely
+    rewarded thin, off-target posts (one coincidental match → ratio 1.0 → full
+    marks) and penalised rich, on-target ones (match half of a long stack →
+    ratio 0.5 → half marks).
+    """
     job_skills = vocab.match_skills(job_text)
     cv_skills = set(profile.get("skills", []))
 
@@ -219,9 +246,12 @@ def _skill_score(profile: dict, job_text: str) -> tuple[float, list[str], list[s
 
     got = sum(weight(s) for s in matched)
     total = sum(weight(s) for s in job_skills)
-    ratio = got / total if total else 0.0
 
-    return ratio * 55.0, matched, missing
+    coverage = got / total if total else 0.0
+    depth = min(got / _SKILL_DEPTH_TARGET, 1.0)
+    points = 55.0 * (0.7 * depth + 0.3 * coverage)
+
+    return points, matched, missing
 
 
 def _title_score(profile: dict, job_title: str) -> float:
@@ -397,9 +427,29 @@ def score_offline(profile: dict, job: dict, blacklist: list[str],
 
     skill_pts, matched, missing = _skill_score(profile, job_text)
     title_pts = _title_score(profile, title)
+    job_level = vocab.detect_seniority(title) or vocab.detect_seniority(job_text[:600])
+
+    # Domain-relevance gate. A posting the candidate has no title relationship
+    # to *and* barely any skill overlap with is off-domain — a secretary or
+    # data-entry role on a software/devops run. Reject it outright rather than
+    # let a coincidental skill or two float it above real matches. The check is
+    # an AND: a clearly related title survives thin skills, and strong skill
+    # overlap survives an unrecognised title, so genuine matches are never lost.
+    off_domain = title_pts < _TITLE_RELATED_FLOOR and len(matched) < _MIN_DOMAIN_SKILLS
+    if off_domain:
+        shared = ", ".join(matched) if matched else "none"
+        return _empty_score(
+            score=0,
+            seniority=job_level or "unstated",
+            gaps=[f"Not in CV: {s}" for s in missing[:6]],
+            rejected_reason=(
+                f"off-domain: title unrelated to your roles and only "
+                f"{len(matched)} shared skill(s) ({shared})"
+            ),
+        )
+
     seniority_pts, seniority_note = _seniority_fit(profile, job, job_text,
                                                    relaxed=relaxed_experience)
-    job_level = vocab.detect_seniority(title) or vocab.detect_seniority(job_text[:600])
 
     if seniority_pts == REJECT:
         return _empty_score(

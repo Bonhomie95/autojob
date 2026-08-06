@@ -30,3 +30,5 @@ Thumbs.db
 jobhunter.db
 dev.bonhomieinc.jobhunter.plist
 .claude
+node_modules/
+.coverage
