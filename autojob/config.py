@@ -54,10 +54,19 @@ class BaseConfig:
         "pool_recycle": 1800,
     }
 
-    # ── Background jobs (Phase 5) ─────────────────────────────────
+    # ── Background jobs ───────────────────────────────────────────
+    # AutoJob runs as a single web service by default: discovery runs execute
+    # in a background thread in-process, and progress streams over an in-process
+    # bus (see services/progress.py) — no Redis, no separate worker required.
+    # Set RUN_VIA_CELERY=true (with a reachable broker + a running worker) to
+    # enqueue runs onto Celery instead, for horizontal scaling.
+    RUN_VIA_CELERY = _bool("RUN_VIA_CELERY", False)
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", REDIS_URL)
     CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", REDIS_URL)
+    # Default to running any dispatched Celery task inline, so nothing depends on
+    # a broker being present unless the operator explicitly opts into Celery.
+    CELERY_TASK_ALWAYS_EAGER = _bool("CELERY_TASK_ALWAYS_EAGER", True)
 
     # ── Credential encryption (Phase 4) ───────────────────────────
     # Fernet key used to encrypt per-user secrets (their SMTP password, API

@@ -1,8 +1,13 @@
 # Deploying AutoJob SaaS
 
-The SaaS application is the `autojob/` package (Flask app factory + Celery). The
-legacy single-user `app.py` and its modules remain in the repo as the engine
-source; the SaaS reuses the engine's stateless parts.
+The SaaS application is the `autojob/` package (Flask app factory). The stateless
+engine — CV parsing, scoring, document generation, scrapers — lives in `core/`
+and `scrapers/` and is reused per tenant; the legacy `config.py`/`database.py`
+globals those modules read are shimmed per-run via `autojob/services/engine_adapter.py`.
+
+The default deployment is a **single web service, no Redis**: runs execute in a
+background thread and progress streams in-process (see the Dockerfile / render.yaml).
+Celery + Redis is an optional scale-out path (`RUN_VIA_CELERY=true`), shown below.
 
 ## Architecture
 

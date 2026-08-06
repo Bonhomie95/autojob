@@ -158,7 +158,10 @@ class Config:
         ]
 
         # ── Candidate
-        self.CANDIDATE_NAME: str     = self._get("CANDIDATE_NAME", "Candidate")
+        # Default is empty, not "Candidate": a non-empty default is treated by
+        # resolve_contacts() as an explicit user-supplied name and would
+        # override the real name parsed from the CV.
+        self.CANDIDATE_NAME: str     = self._get("CANDIDATE_NAME", "")
         self.CANDIDATE_EMAIL: str    = self._get("CANDIDATE_EMAIL", "")
         self.CANDIDATE_PHONE: str    = self._get("CANDIDATE_PHONE", "")
         self.CANDIDATE_LOCATION: str = self._get("CANDIDATE_LOCATION", "")

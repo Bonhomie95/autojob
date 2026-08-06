@@ -403,6 +403,33 @@ def _merge_months(ranges: list[tuple[int, int]]) -> float:
     return float(sum(end - start for start, end in merged))
 
 
+_STATED_YEARS_RE = re.compile(r"(\d{1,2})\s*\+?\s*years?", re.I)
+
+
+def _stated_years(text: str) -> float:
+    """
+    The largest "N+ years" figure the candidate claims in prose.
+
+    Used only as a fallback when the experience section carries no employment
+    date ranges to compute a span from. Many strong CVs open with "DevOps
+    Engineer with 9+ years of experience" in the summary yet list their roles
+    without inline dates (or the dates live in a sidebar the text extractor
+    drops). Without this, such a profile reads as 0 years, and the scorer's
+    realism gate then treats a senior candidate as junior — rejecting the very
+    senior/mid roles they are most qualified for. Capped at 45 to ignore stray
+    numbers, and only ever trusted when dated experience yields nothing.
+    """
+    best = 0.0
+    for m in _STATED_YEARS_RE.finditer(text or ""):
+        try:
+            value = float(m.group(1))
+        except (TypeError, ValueError):
+            continue
+        if 0 < value <= 45:
+            best = max(best, value)
+    return best
+
+
 # ──────────────────────────────────────────────────────────────
 # Experience & projects
 # ──────────────────────────────────────────────────────────────
@@ -442,9 +469,16 @@ def _parse_experience(section: str) -> list[dict]:
 
     An entry is anchored by the line carrying the date range. The title is
     taken from that line if it holds one, otherwise from the line above.
+
+    When the section carries no date ranges at all — a common layout where
+    roles are listed as a bare title over bullets — fall back to a parser that
+    anchors on the title line instead, so the roles are still captured.
     """
     if not section:
         return []
+
+    if not _parse_ranges(section):
+        return _parse_undated_experience(section)
 
     lines = [ln for ln in section.split("\n") if ln.strip()]
     entries: list[dict] = []
@@ -501,6 +535,62 @@ def _parse_experience(section: str) -> list[dict]:
 
         if not bullet:
             prev_line = bare
+
+    if current:
+        entries.append(current)
+    return entries
+
+
+def _parse_undated_experience(section: str) -> list[dict]:
+    """
+    Parse experience from a section that carries no date ranges.
+
+    Anchors each entry on a line that looks like a job title, then attaches the
+    bullets beneath it. This is the fallback for CVs that list roles as a bare
+    title over bullets with the dates omitted — the dated parser would return
+    nothing for those, which reads downstream as "no experience" and, via a
+    0-year profile, mislabels a senior candidate as junior.
+    """
+    entries: list[dict] = []
+    current: dict | None = None
+
+    for line in section.split("\n"):
+        bare = line.strip()
+        if not bare:
+            continue
+        bullet = _BULLET_RE.match(line)
+
+        if bullet:
+            if current is not None:
+                text = bullet.group(1).strip()
+                if len(text) > 10:
+                    current["bullets"].append(text)
+            continue
+
+        if _looks_like_title(bare):
+            if current:
+                entries.append(current)
+            parts = [p.strip(" ,|·—-") for p in re.split(r"[|·]|\s{2,}", bare)
+                     if p.strip(" ,|·—-")]
+            title, company = bare, ""
+            if len(parts) > 1:
+                title = next((p for p in parts if _looks_like_title(p)), parts[0])
+                company = next((p for p in parts if p != title), "")
+            current = {
+                "title": title,
+                "company": company,
+                "period": "",
+                "bullets": [],
+                "months": 0.0,
+            }
+        elif current is not None:
+            if current["bullets"]:
+                # A wrapped continuation of the bullet above.
+                current["bullets"][-1] += " " + bare
+            elif not current["company"] and len(bare) <= 60:
+                current["company"] = bare
+            elif len(bare) > 10:
+                current["bullets"].append(bare)
 
     if current:
         entries.append(current)
@@ -766,6 +856,12 @@ def build_profile(cv_text: str) -> dict:
     # are not employment.
     exp_ranges = _parse_ranges(sections.get("experience", ""))
     years = round(_merge_months(exp_ranges) / 12.0, 1)
+    # No dated employment to measure? Trust a "N+ years" claim in the summary
+    # rather than defaulting to 0, which would misread a senior CV as junior.
+    if years <= 0:
+        stated = _stated_years(f"{summary}\n{header}")
+        if stated:
+            years = stated
 
     titles = _derive_titles(experience, summary or header)
     seniority = _derive_seniority(years, experience)

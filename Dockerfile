@@ -1,11 +1,18 @@
-# ── AutoJob (single-user app) image ──────────────────────────
-# Runs the no-sign-up dashboard (root app.py / wsgi.py) — NOT the multi-tenant
-# SaaS package in autojob/. This is what Render builds and runs.
+# ── AutoJob (multi-tenant SaaS) image ────────────────────────
+# Runs the multi-tenant app in autojob/ (sign-up/login, per-user CV, isolated
+# jobs/settings/credentials). This is what Render builds and runs.
+#
+# It runs as a SINGLE web service — no Redis and no separate Celery worker:
+# discovery runs execute in a background thread in-process and progress streams
+# over an in-process bus. That requires exactly ONE gunicorn worker (with
+# threads), so a run's thread and its SSE stream live in the same process.
 FROM python:3.13-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    APP_ENV=production \
+    FLASK_APP=autojob.wsgi:app
 
 # curl for the healthcheck; build-essential for wheels; tesseract-ocr so
 # scanned/image-only CVs can be read via OCR.
@@ -21,21 +28,20 @@ RUN pip install --upgrade pip && pip install -r requirements.txt gunicorn
 
 COPY . .
 
-# Writable dirs for uploaded CVs, generated packages, and the local SQLite
-# fallback. On Render these point at the mounted disk (/var/data).
-RUN mkdir -p /app/input /app/output /var/data
-
-# NOTE: runs as root on purpose. Render mounts the persistent disk as
-# root-owned, so a non-root user could not write uploaded CVs / generated
-# packages to /var/data. This is a single-user personal tool, so root in the
-# container is an acceptable, reliable trade-off.
+# Writable dir for uploaded CVs and generated packages (per-user subdirs).
+# On Render this points at the mounted disk (/var/data) via STORAGE_LOCAL_ROOT.
+RUN mkdir -p /var/data
 
 # Render injects $PORT; default to 10000 for a plain `docker run`.
 ENV PORT=10000
 EXPOSE 10000
 
-# Single worker (the live log stream, in-process run lock, and APScheduler all
-# assume one process); threads handle the concurrent SSE connections.
+# Apply DB migrations, then serve. One gthread worker + threads: the in-process
+# progress bus and background run threads require a single process, while
+# threads still handle concurrent SSE streams. --timeout 0 keeps long-lived SSE
+# connections and multi-minute background runs from tripping the worker timeout.
 # Shell form so ${PORT} is expanded at runtime.
-CMD gunicorn wsgi:app --bind 0.0.0.0:${PORT} --workers 1 --threads 8 \
-    --timeout 120 --access-logfile - --error-logfile -
+CMD flask db upgrade && \
+    exec gunicorn autojob.wsgi:app --bind 0.0.0.0:${PORT} \
+        --worker-class gthread --workers 1 --threads 8 --timeout 0 \
+        --access-logfile - --error-logfile -

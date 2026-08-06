@@ -1,7 +1,10 @@
-# Render blueprint for AutoJob (single-user, no sign-in).
+# Render blueprint for AutoJob (multi-tenant SaaS).
 # Deploy: push this repo to GitHub, then in Render → "New +" → "Blueprint",
 # point it at this repo. Render reads this file and provisions everything:
-# a managed Postgres database + a web service + a small disk for files.
+# a managed Postgres database + a single web service + a small disk for files.
+#
+# No Redis and no worker service: the app runs discovery in a background thread
+# and streams progress in-process, so a single web service is all it needs.
 
 databases:
   - name: autojob-db
@@ -13,42 +16,48 @@ services:
   - type: web
     name: autojob
     # Build from the Dockerfile so what Render runs is exactly what you can test
-    # locally with `docker build` — and so it can never accidentally boot the
-    # multi-tenant SaaS package. The Dockerfile CMD runs the single-user app.
+    # locally with `docker build`. The Dockerfile runs migrations then serves the
+    # SaaS with a single gunicorn worker (required by the in-process run/SSE bus).
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter        # "free" also works but sleeps after inactivity
+    plan: starter        # a single worker needs a always-on instance; "free" sleeps
     healthCheckPath: /healthz
     autoDeploy: true
-    # The disk holds uploaded CVs and generated application packages. Everything
-    # else — job history, the "don't apply twice" memory, AND all your settings
-    # (email sender, schedule, job caps) — lives in Postgres, edited from the
-    # dashboard. Nothing important depends on files or .env, so redeploys are safe.
+    # The disk holds uploaded CVs and generated application packages (per user).
+    # Everything else — users, per-user settings, job history, encrypted
+    # credentials — lives in Postgres, so redeploys are safe.
     disk:
       name: autojob-files
       mountPath: /var/data
       sizeGB: 1
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.6"
+      - key: APP_ENV
+        value: production
       # ── Database: managed Postgres (auto-wired from the block above) ──
       - key: DATABASE_URL
         fromDatabase:
           name: autojob-db
           property: connectionString
-      # ── File storage (on the mounted disk) ──
-      - key: INPUT_DIR
-        value: /var/data/input
-      - key: OUTPUT_DIR
-        value: /var/data/output
-      # ── App ──
-      - key: FLASK_DEBUG
-        value: "false"
-      # Everything below (schedule, job counts, email, timezone) is set from the
-      # dashboard Settings page and stored in the database — no env vars needed.
-      # Set your live URL so LinkedIn share cards point at the right place:
-      - key: APP_BASE_URL
+      # ── Secrets ──
+      # Flask session/CSRF signing key — Render generates a stable random value.
+      - key: SECRET_KEY
+        generateValue: true
+      # Fernet key that encrypts each user's SMTP password + API keys at rest.
+      # It MUST be a valid Fernet key, so generate it yourself and paste it in
+      # (Render's generateValue is not a valid Fernet key). Generate with:
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - key: CREDENTIAL_ENCRYPTION_KEY
         sync: false
-      # Optional: only needed for AI polish of your very top matches.
-      - key: GROQ_API_KEY
+      # ── File storage (on the mounted disk) ──
+      - key: STORAGE_LOCAL_ROOT
+        value: /var/data/storage
+      # ── Security ──
+      - key: SESSION_COOKIE_SECURE
+        value: "true"
+      # ── Optional: platform-managed API keys ──
+      # Set these to let users "just upload a CV" without bringing their own
+      # keys. Leave unset to require each user to supply their own in Settings.
+      - key: MANAGED_GROQ_KEYS
+        sync: false
+      - key: MANAGED_HUNTER_KEYS
         sync: false
