@@ -2,20 +2,24 @@
 Safe database bootstrap for deploys.
 
 Replaces a bare ``flask db upgrade`` at boot so it does the right thing against
-three possible starting states:
+any starting state:
 
-1. **Already Alembic-managed** (``alembic_version`` present) — just apply any new
-   migrations. This is every normal redeploy; it's a no-op when up to date.
-2. **A legacy single-user database** — tables like ``jobs``/``corpus_meta`` left
-   behind by the old top-level ``app.py`` (which created them directly, with no
-   Alembic tracking). The legacy ``jobs`` table has no ``user_id`` column, which
-   is an unambiguous fingerprint. That data is not multi-tenant and is abandoned
-   in the migration to the SaaS, so those tables are dropped and the SaaS schema
-   is built fresh. Set ``KEEP_LEGACY_DB=true`` to refuse instead of dropping.
+1. **Alembic-managed** (``alembic_version`` present) — apply any new migrations.
+   This is every normal redeploy; a no-op when already up to date.
+2. **Unmanaged but non-empty** — tables exist with no ``alembic_version``. Two
+   ways this happens migrating from the old top-level ``app.py``:
+     * the *legacy single-user* schema it created directly (its ``jobs`` table
+       has no ``user_id`` column), or
+     * a *partially initialised* schema from an earlier migration attempt that
+       created some SaaS tables (e.g. ``users``) but never recorded a version —
+       which then fails every retry on ``relation ... already exists``.
+   Neither is trustworthy and neither carries multi-tenant data worth keeping,
+   so the schema is dropped and rebuilt cleanly. Set ``KEEP_LEGACY_DB=true`` to
+   refuse and stop instead of dropping.
 3. **Empty** — just build the SaaS schema.
 
-This is what makes the first SaaS deploy onto a database the single-user app had
-already populated succeed, instead of failing on ``relation already exists``.
+This is what lets the first SaaS deploy succeed onto a database the single-user
+app had already populated (or a half-finished earlier attempt left behind).
 """
 
 from __future__ import annotations
@@ -30,13 +34,6 @@ from .extensions import db
 
 logger = logging.getLogger(__name__)
 
-# Tables the legacy single-user app created directly (no Alembic). Dropped only
-# when a legacy schema is positively identified (see below).
-_LEGACY_TABLES = [
-    "app_settings", "jobs", "runs", "cv_profiles", "cv_choices",
-    "token_df", "corpus_meta",
-]
-
 
 def _is_legacy_schema(inspector) -> bool:
     """A ``jobs`` table with no ``user_id`` column is the single-user schema."""
@@ -46,11 +43,20 @@ def _is_legacy_schema(inspector) -> bool:
     return "user_id" not in cols
 
 
-def _drop_legacy_tables() -> None:
-    cascade = " CASCADE" if db.engine.dialect.name == "postgresql" else ""
+def _drop_all_tables(inspector) -> list[str]:
+    """Drop every table in the database. CASCADE on Postgres so foreign keys
+    between them don't force a drop order; FKs aren't enforced on SQLite."""
+    names = inspector.get_table_names()
+    if not names:
+        return []
+    is_pg = db.engine.dialect.name == "postgresql"
     with db.engine.begin() as conn:
-        for table in _LEGACY_TABLES:
-            conn.execute(text(f'DROP TABLE IF EXISTS "{table}"{cascade}'))
+        if not is_pg:
+            conn.execute(text("PRAGMA foreign_keys=OFF"))
+        for table in names:
+            suffix = " CASCADE" if is_pg else ""
+            conn.execute(text(f'DROP TABLE IF EXISTS "{table}"{suffix}'))
+    return names
 
 
 def bootstrap_database() -> str:
@@ -62,21 +68,26 @@ def bootstrap_database() -> str:
         alembic_upgrade()
         return "upgraded"
 
-    if _is_legacy_schema(inspector):
+    if tables:
+        kind = "legacy single-user" if _is_legacy_schema(inspector) \
+            else "partially-initialised"
         if _bool("KEEP_LEGACY_DB", False):
             raise RuntimeError(
-                "Refusing to start: the database holds the legacy single-user "
-                "schema and KEEP_LEGACY_DB is set. Migrate or drop it manually, "
-                "or unset KEEP_LEGACY_DB to let the SaaS rebuild it (this drops "
-                f"the old tables: {', '.join(_LEGACY_TABLES)})."
+                f"Refusing to start: the database holds an unmanaged "
+                f"({kind}) schema and KEEP_LEGACY_DB is set. Migrate or drop it "
+                f"manually, or unset KEEP_LEGACY_DB to let the SaaS reset and "
+                f"rebuild it (this drops all existing tables)."
             )
         logger.warning(
-            "Legacy single-user database detected — dropping its tables (%s) and "
-            "rebuilding the multi-tenant schema. Old single-user data is not "
-            "carried over.",
-            ", ".join(_LEGACY_TABLES),
+            "Unmanaged %s database detected (%d table(s), no alembic_version) — "
+            "resetting and rebuilding the multi-tenant schema. Existing data is "
+            "not carried over.",
+            kind, len(tables),
         )
-        _drop_legacy_tables()
+        dropped = _drop_all_tables(inspector)
+        logger.warning("Dropped tables: %s", ", ".join(sorted(dropped)))
+        alembic_upgrade()
+        return "reset"
 
     alembic_upgrade()
     return "initialised"
