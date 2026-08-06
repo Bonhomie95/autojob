@@ -41,7 +41,7 @@ EXPOSE 10000
 # threads still handle concurrent SSE streams. --timeout 0 keeps long-lived SSE
 # connections and multi-minute background runs from tripping the worker timeout.
 # Shell form so ${PORT} is expanded at runtime.
-CMD flask db upgrade && \
+CMD python manage.py init-db && \
     exec gunicorn autojob.wsgi:app --bind 0.0.0.0:${PORT} \
         --worker-class gthread --workers 1 --threads 8 --timeout 0 \
         --access-logfile - --error-logfile -

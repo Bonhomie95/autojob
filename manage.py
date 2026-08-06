@@ -3,6 +3,7 @@ Developer entrypoint for the AutoJob SaaS app.
 
     python manage.py run          # start the dev server
     python manage.py routes       # list registered routes
+    python manage.py init-db      # safe migrate/bootstrap (used at deploy boot)
 
 Production uses Gunicorn against ``autojob.wsgi:app`` instead — never this.
 """
@@ -27,6 +28,12 @@ def main() -> None:
         for rule in sorted(app.url_map.iter_rules(), key=lambda r: r.rule):
             methods = ",".join(sorted(rule.methods - {"HEAD", "OPTIONS"}))
             print(f"{rule.rule:30s} [{methods}] -> {rule.endpoint}")
+    elif cmd in ("init-db", "init_db"):
+        from autojob.db_bootstrap import bootstrap_database
+
+        with app.app_context():
+            result = bootstrap_database()
+        print(f"Database {result}.")
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)
