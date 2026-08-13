@@ -1,0 +1,62 @@
+# Optional scale-out stack: web + Celery worker + beat + Redis.
+# This is the multi-process path (RUN_VIA_CELERY=true) for when one web service
+# isn't enough — the default Render deploy needs none of this.
+#
+# MongoDB isn't run locally here — point MONGODB_URI (in .env.docker) at your
+# Atlas cluster (or any other managed Mongo); there's no schema to migrate, so
+# no local Mongo container or one-shot migrate service is needed.
+#
+# Copy .env.example to .env.docker and fill the secrets (including
+# MONGODB_URI) before `up`.
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: .
+    # Multi-worker web tier. Safe here (unlike the single-service default)
+    # because RUN_VIA_CELERY=true sends runs to the worker and progress streams
+    # over Redis pub/sub, so it survives crossing process boundaries.
+    command: gunicorn autojob.wsgi:app --bind 0.0.0.0:9000 --workers 4 --timeout 120 --access-logfile -
+    env_file:
+      - path: .env.docker
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      RATELIMIT_STORAGE_URI: redis://redis:6379/1
+      RUN_VIA_CELERY: "true"
+    ports:
+      - "9000:9000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: celery -A autojob.celery_app.celery worker --loglevel=info
+    env_file:
+      - path: .env.docker
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_TASK_ALWAYS_EAGER: "false"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: .
+    command: celery -A autojob.celery_app.celery beat --loglevel=info
+    env_file:
+      - path: .env.docker
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy

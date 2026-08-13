@@ -1,0 +1,84 @@
+# Render blueprint for the AutoJob API (backend only — the frontend deploys
+# separately to Vercel, see frontend/vercel.json).
+# Deploy: push this repo to GitHub, then in Render → "New +" → "Blueprint",
+# point it at this repo. Render reads this file and provisions a single web
+# service + a small disk for files. The database is MongoDB (Atlas or any
+# other managed Mongo) — Render doesn't provision Mongo itself, so set
+# MONGODB_URI by hand in the dashboard after the first deploy (Environment ->
+# add MONGODB_URI, a mongodb+srv://... connection string with the db name in
+# the path, e.g. .../autojob).
+#
+# No Redis and no worker service: the app runs discovery in a background thread
+# and streams progress in-process, so a single web service is all it needs.
+
+services:
+  - type: web
+    name: autojob
+    # Build from the Dockerfile so what Render runs is exactly what you can
+    # test locally with `docker build`. Single gunicorn worker (required by
+    # the in-process run/SSE bus) — see Dockerfile.
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter        # a single worker needs a always-on instance; "free" sleeps
+    healthCheckPath: /healthz
+    autoDeploy: true
+    # The disk holds uploaded CVs and generated application packages (per user).
+    # Everything else — users, per-user settings, job history, encrypted
+    # credentials — lives in MongoDB, so redeploys are safe.
+    disk:
+      name: autojob-files
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: APP_ENV
+        value: production
+      # ── Database: MongoDB Atlas (or any other managed Mongo) ──
+      # Set this by hand in the Render dashboard — Render has no native Mongo
+      # provisioning to auto-wire it the way it does for its own Postgres.
+      - key: MONGODB_URI
+        sync: false
+      # ── Secrets ──
+      # Flask session/CSRF signing key — Render generates a stable random value.
+      - key: SECRET_KEY
+        generateValue: true
+      # Fernet key that encrypts each user's SMTP password + API keys at rest.
+      # It MUST be a valid Fernet key, so generate it yourself and paste it in
+      # (Render's generateValue is not a valid Fernet key). Generate with:
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - key: CREDENTIAL_ENCRYPTION_KEY
+        sync: false
+      # ── File storage (on the mounted disk) ──
+      - key: STORAGE_LOCAL_ROOT
+        value: /var/data/storage
+      # ── Security ──
+      - key: SESSION_COOKIE_SECURE
+        value: "true"
+      # ── CORS: the deployed frontend's origin (Vercel), e.g.
+      # https://autojob.vercel.app — set this by hand once you know it.
+      # Comma-separate multiple origins (prod + preview deploys) if needed.
+      # Without this, the API rejects cross-origin requests outright.
+      - key: FRONTEND_ORIGIN
+        sync: false
+      # ── Optional: which AI provider, and platform-managed API keys ──
+      # AI_PROVIDER: groq (default) | openai | anthropic | gemini | openrouter.
+      # A user can override this for their own account in Settings.
+      - key: AI_PROVIDER
+        value: groq
+      # The MANAGED_*_KEYS below let users "just upload a CV" without
+      # bringing their own keys. Leave unset to require each user to supply
+      # their own in Settings. Only the pool matching AI_PROVIDER (or a
+      # user's per-account override) is ever used.
+      - key: MANAGED_GROQ_KEYS
+        sync: false
+      - key: MANAGED_OPENAI_KEYS
+        sync: false
+      - key: MANAGED_ANTHROPIC_KEYS
+        sync: false
+      - key: MANAGED_GEMINI_KEYS
+        sync: false
+      - key: MANAGED_GROK_KEYS
+        sync: false
+      - key: MANAGED_OPENROUTER_KEYS
+        sync: false
+      - key: MANAGED_HUNTER_KEYS
+        sync: false

@@ -1,0 +1,119 @@
+"""CV validation, storage, and tenant isolation of documents & credentials."""
+
+from __future__ import annotations
+
+import pytest
+
+from autojob.services import cv_service, storage
+from autojob.services import runtime_config as rc
+
+# Minimal valid signatures.
+PDF_BYTES = b"%PDF-1.4\n% minimal\n" + b"x" * 200
+DOCX_BYTES = b"PK\x03\x04" + b"y" * 200
+TXT_BYTES = b"Jane Dev\njane@x.com\nPython, Flask"
+
+
+def test_validate_rejects_wrong_extension(app_context):
+    with pytest.raises(cv_service.CvValidationError):
+        cv_service.validate_upload("resume.exe", PDF_BYTES, 10_000_000)
+
+
+def test_validate_rejects_extension_content_mismatch(app_context):
+    # .pdf extension but not a PDF payload
+    with pytest.raises(cv_service.CvValidationError):
+        cv_service.validate_upload("resume.pdf", b"not a pdf", 10_000_000)
+
+
+def test_validate_rejects_oversize(app_context):
+    with pytest.raises(cv_service.CvValidationError):
+        cv_service.validate_upload("resume.pdf", PDF_BYTES, max_bytes=10)
+
+
+def test_validate_accepts_good_files(app_context):
+    assert cv_service.validate_upload("cv.pdf", PDF_BYTES, 10_000_000) == ".pdf"
+    assert cv_service.validate_upload("cv.docx", DOCX_BYTES, 10_000_000) == ".docx"
+    assert cv_service.validate_upload("cv.txt", TXT_BYTES, 10_000_000) == ".txt"
+
+
+def test_store_and_active_cv_is_tenant_scoped(make_user):
+    a, b = make_user("a@x.com"), make_user("b@x.com")
+    doc = cv_service.store_cv(a.id, "cv.pdf", PDF_BYTES, 10_000_000)
+    assert doc.is_active
+    assert cv_service.active_cv(a.id).id == doc.id
+    assert cv_service.active_cv(b.id) is None  # isolated
+
+
+def test_storage_key_is_tenant_prefixed():
+    key = storage.cv_key("user123", "deadbeef", ".pdf")
+    assert key == "cv/user123/deadbeef.pdf"
+
+
+def test_uploading_new_cv_deactivates_previous(make_user):
+    a = make_user("a@x.com")
+    first = cv_service.store_cv(a.id, "one.pdf", PDF_BYTES, 10_000_000)
+    second = cv_service.store_cv(a.id, "two.txt", TXT_BYTES, 10_000_000)
+    assert cv_service.active_cv(a.id).id == second.id
+    assert second.id != first.id
+
+
+def test_runtime_config_defaults_and_managed_fallback(make_user, app):
+    a = make_user("a@x.com")
+    app.config["MANAGED_GROQ_KEYS"] = "managed-key-1,managed-key-2"
+    cfg = rc.build_runtime_config(a.id)
+    assert cfg.min_match_score == 60
+    assert cfg.auto_send is False
+    # default provider is groq; user set no key → managed pool is used
+    assert cfg.ai_provider == "groq"
+    assert cfg.ai_keys == ["managed-key-1", "managed-key-2"]
+    assert cfg.managed_llm is True
+
+
+def test_runtime_config_prefers_user_key(make_user, app):
+    from autojob.services import repository as repo
+
+    a = make_user("a@x.com")
+    app.config["MANAGED_GROQ_KEYS"] = "managed-key"
+    repo.set_credential(a.id, "groq", "user-key-1,user-key-2")
+    cfg = rc.build_runtime_config(a.id)
+    assert cfg.ai_keys == ["user-key-1", "user-key-2"]
+    assert cfg.managed_llm is False
+
+
+def test_runtime_config_selects_non_groq_provider(make_user, app):
+    from autojob.services import repository as repo
+
+    a = make_user("a@x.com")
+    app.config["MANAGED_OPENAI_KEYS"] = "managed-openai-key"
+    repo.update_settings(a.id, ai_provider="openai")
+    # No BYO openai key yet → falls back to the managed pool for THAT provider.
+    cfg = rc.build_runtime_config(a.id)
+    assert cfg.ai_provider == "openai"
+    assert cfg.ai_keys == ["managed-openai-key"]
+    assert cfg.managed_llm is True
+
+    # A saved "groq" credential must NOT leak into the openai selection.
+    repo.set_credential(a.id, "groq", "some-groq-key")
+    cfg = rc.build_runtime_config(a.id)
+    assert cfg.ai_keys == ["managed-openai-key"]
+
+    # Once the user brings their own openai key, it wins over the managed pool.
+    repo.set_credential(a.id, "openai", "user-openai-key")
+    cfg = rc.build_runtime_config(a.id)
+    assert cfg.ai_keys == ["user-openai-key"]
+    assert cfg.managed_llm is False
+
+
+def test_runtime_config_enrichment_managed_and_override(make_user, app):
+    from autojob.services import repository as repo
+    from autojob.services import runtime_config as rc
+
+    a = make_user("enrich@x.com")
+    app.config["MANAGED_PROSPEO_KEYS"] = "mp1,mp2"
+    app.config["MANAGED_REOON_KEYS"] = "mr1"
+    # user brings their own hunter key; prospeo/reoon fall back to managed
+    repo.set_credential(a.id, "hunter", "user-hunter")
+    cfg = rc.build_runtime_config(a.id)
+    assert cfg.hunter_keys == ["user-hunter"]
+    assert cfg.prospeo_keys == ["mp1", "mp2"]
+    assert cfg.reoon_keys == ["mr1"]
+    assert cfg.managed_enrichment is True
